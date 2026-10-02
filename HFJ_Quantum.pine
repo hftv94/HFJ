@@ -1,33 +1,63 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// النسخة v8.6 - إعادة هيكلة احترافية + تتبع الصفقة حتى الهدف/الوقف + إحصائيات
+// النسخة v9.0 - محرك تعلم آلي kNN حقيقي + إشارات كبرى مؤكدة بـ SuperTrend + متوسطات 50/200
 //@version=6
-indicator("HFJ Quantum v8.6", shorttitle = "HFJ Q", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
+indicator("HFJ Quantum v9.0", shorttitle = "HFJ Q", overlay = true, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
 
 // ════════════════════════════════════════════════════════════
 // 0. الثوابت
 // ════════════════════════════════════════════════════════════
-const string GRP_AI     = "محرك kNN (قائد الاتجاه)"
+const string GRP_ML     = "محرك التعلم الآلي (kNN)"
+const string GRP_MAJOR  = "الإشارات الكبرى (SuperTrend + AI)"
+const string GRP_AI     = "فلتر الاتجاه السريع"
 const string GRP_FILTER = "الفلاتر"
+const string GRP_MA     = "المتوسطات المتحركة"
 const string GRP_RISK   = "إدارة المخاطر"
 const string GRP_VISUAL = "التنسيق البصري"
+
+const string MODE_ALL   = "كل الإشارات"
+const string MODE_MAJOR = "الإشارات الكبرى فقط"
 
 const color C_BULL  = #00FF88 // زمردي ليزري
 const color C_BEAR  = #FF4400 // ياقوتي لاهب
 const color C_SL    = #FFD700 // ذهبي ملكي للوقف
 const color C_NEUT  = #555555 // رمادي معدني
 const color C_ENTRY = #FFFFFF
+const color C_MA50  = #29B6F6 // أزرق سماوي
+const color C_MA200 = #E040FB // بنفسجي
 
 // ════════════════════════════════════════════════════════════
 // 1. المدخلات
 // ════════════════════════════════════════════════════════════
-int   i_knnLen     = input.int(30, "نافذة البحث", minval = 2, maxval = 200, group = GRP_AI, tooltip = "عدد الشموع السابقة التي يقارن بها المحرك السعر الحالي")
+int   i_mlLookback = input.int(1000, "عدد الشموع التاريخية للمقارنة", minval = 100, maxval = 5000, group = GRP_ML, tooltip = "المحرك يقارن الوضع الحالي بهذا العدد من الشموع السابقة")
+int   i_k          = input.int(10, "عدد الجيران الأقرب (K)", minval = 3, maxval = 50, group = GRP_ML)
+int   i_horizon    = input.int(4, "أفق التوقع (شموع)", minval = 1, maxval = 50, group = GRP_ML, tooltip = "هل ارتفع السعر أم انخفض بعد هذا العدد من الشموع؟ هذا ما يتعلمه المحرك من كل جار")
+int   i_stride     = input.int(2, "تباعد العينات", minval = 1, maxval = 10, group = GRP_ML, tooltip = "1 = مقارنة كل شمعة. رفع القيمة يسرّع الحساب ويقلل تكرار الجيران المتلاصقة")
+int   i_mlBars     = input.int(3000, "تشغيل المحرك على آخر N شمعة", minval = 100, maxval = 20000, group = GRP_ML, tooltip = "لتسريع تحميل المؤشر. قبل ذلك لا يُحسب التوقع")
+
+float i_stFactor   = input.float(3.0, "معامل SuperTrend", minval = 0.5, step = 0.1, group = GRP_MAJOR)
+int   i_stAtr      = input.int(10, "فترة ATR لـ SuperTrend", minval = 1, group = GRP_MAJOR)
+float i_conf       = input.float(90.0, "حد ثقة الذكاء الاصطناعي %", minval = 50.0, maxval = 100.0, step = 5.0, group = GRP_MAJOR, tooltip = "لا تظهر الإشارة الكبرى إلا إذا تجاوزت نسبة توقع AI هذا الحد واتفقت مع SuperTrend")
+bool  i_showSt     = input.bool(true, "إظهار خط SuperTrend", group = GRP_MAJOR)
+bool  i_majorBg    = input.bool(true, "تلوين خلفية شمعة الإشارة الكبرى", group = GRP_MAJOR)
+
+int   i_knnLen     = input.int(30, "نافذة البحث", minval = 2, maxval = 200, group = GRP_AI, tooltip = "عدد الشموع السابقة التي يقارن بها الفلتر السعر الحالي")
+
 int   i_rsiLen     = input.int(14, "فترة RSI", minval = 2, group = GRP_FILTER)
 int   i_emaLen     = input.int(9, "فترة EMA السريع", minval = 1, group = GRP_FILTER)
 bool  i_confirm    = input.bool(true, "تأكيد الإشارة عند إغلاق الشمعة", group = GRP_FILTER, tooltip = "يمنع ظهور واختفاء الإشارة أثناء تكوّن الشمعة (بدون إعادة رسم)")
+
+bool  i_showMa50   = input.bool(true, "إظهار المتوسط 50", inline = "ma50", group = GRP_MA)
+int   i_ma50Len    = input.int(50, "", minval = 1, inline = "ma50", group = GRP_MA)
+bool  i_showMa200  = input.bool(true, "إظهار المتوسط 200", inline = "ma200", group = GRP_MA)
+int   i_ma200Len   = input.int(200, "", minval = 1, inline = "ma200", group = GRP_MA)
+string i_maType    = input.string("EMA", "نوع المتوسط", options = ["EMA", "SMA"], group = GRP_MA)
+
+string i_tradeMode = input.string(MODE_ALL, "فتح الصفقات على", options = [MODE_ALL, MODE_MAJOR], group = GRP_RISK)
 float i_rr         = input.float(2.0, "نسبة الهدف (R:R)", minval = 0.1, step = 0.1, group = GRP_RISK)
 int   i_slLookback = input.int(5, "نطاق وقف الخسارة (شموع)", minval = 2, group = GRP_RISK)
 float i_slBuffer   = input.float(0.1, "هامش الوقف (× ATR)", minval = 0.0, step = 0.05, group = GRP_RISK)
+
 int   i_ext        = input.int(10, "امتداد الخطوط أمام السعر", minval = 1, maxval = 100, group = GRP_VISUAL)
 int   i_history    = input.int(3, "عدد الصفقات السابقة على الشارت", minval = 0, maxval = 50, group = GRP_VISUAL)
 bool  i_showHud    = input.bool(true, "إظهار لوحة التحكم (HUD)", group = GRP_VISUAL)
@@ -46,7 +76,13 @@ float range_  = high - low
 float rawClv  = range_ > 0 ? ((close - low) - (high - close)) / range_ : 0.0
 float clv     = ta.sma(rawClv, 3)
 
-// محرك kNN: يصوّت بالشموع السابقة القريبة من السعر الحالي (أقل من ATR)
+float ma50  = i_maType == "EMA" ? ta.ema(close, i_ma50Len) : ta.sma(close, i_ma50Len)
+float ma200 = i_maType == "EMA" ? ta.ema(close, i_ma200Len) : ta.sma(close, i_ma200Len)
+
+[stLine, stDir] = ta.supertrend(i_stFactor, i_stAtr)
+bool stUp = stDir < 0 // في TradingView: الاتجاه السالب = صاعد
+
+// فلتر الاتجاه السريع: يصوّت بالشموع السابقة القريبة من السعر الحالي (أقل من ATR)
 // النتيجة: 1 صاعد، -1 هابط، 0 محايد
 int bullVotes = 0
 int bearVotes = 0
@@ -57,15 +93,113 @@ for i = 1 to i_knnLen
 int trendAi = bullVotes > bearVotes ? 1 : bearVotes > bullVotes ? -1 : 0
 
 // ════════════════════════════════════════════════════════════
-// 3. الإشارات
+// 3. محرك التعلم الآلي kNN
 // ════════════════════════════════════════════════════════════
+// تحويل أي قيمة إلى نطاق 0..1 بشكل ناعم (لتوحيد مقياس الخصائص)
+f_squash(float x) =>
+    0.5 + 0.5 * x / (1.0 + math.abs(x))
+
+// خصائص "بصمة السوق" لكل شمعة — كلها بين 0 و 1
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+float atrSafe = nz(atr14) > 0 ? atr14 : syminfo.mintick
+float feat1 = ta.rsi(close, 14) / 100.0                         // الزخم
+float feat2 = ta.stoch(close, high, low, 14) / 100.0           // موقع السعر في النطاق
+float feat3 = adxVal / 100.0                                    // قوة الاتجاه
+float feat4 = f_squash((close - ma50) / atrSafe)                // البعد عن المتوسط 50
+float feat5 = f_squash((close - nz(close[5], close)) / atrSafe) // سرعة الحركة
+
+// ذاكرة المحرك: آخر (lookback + horizon) شمعة
+var array<float> mF1 = array.new<float>()
+var array<float> mF2 = array.new<float>()
+var array<float> mF3 = array.new<float>()
+var array<float> mF4 = array.new<float>()
+var array<float> mF5 = array.new<float>()
+var array<float> mClose = array.new<float>()
+
+mF1.push(feat1)
+mF2.push(feat2)
+mF3.push(feat3)
+mF4.push(feat4)
+mF5.push(feat5)
+mClose.push(close)
+while mClose.size() > i_mlLookback + i_horizon + 1
+    mF1.shift()
+    mF2.shift()
+    mF3.shift()
+    mF4.shift()
+    mF5.shift()
+    mClose.shift()
+
+float probUp   = na
+float probDown = na
+int   nnFound  = 0
+int   memSize  = mClose.size()
+
+if bar_index >= last_bar_index - i_mlBars and memSize > i_horizon + i_k
+    int curIdx = memSize - 1
+    float c1 = mF1.get(curIdx)
+    float c2 = mF2.get(curIdx)
+    float c3 = mF3.get(curIdx)
+    float c4 = mF4.get(curIdx)
+    float c5 = mF5.get(curIdx)
+
+    array<float> nnDist  = array.new<float>(i_k, 1e10)
+    array<int>   nnLabel = array.new<int>(i_k, 0)
+    float worst = 1e10
+
+    // الشموع المؤهلة: التي مرّ عليها أفق التوقع ونعرف نتيجتها (بدون نظر للمستقبل)
+    int pStart = math.max(0, curIdx - i_mlLookback)
+    int pStop  = curIdx - i_horizon
+    if pStop >= pStart
+        for p = pStart to pStop by i_stride
+            float d = math.pow(c1 - mF1.get(p), 2) + math.pow(c2 - mF2.get(p), 2) + math.pow(c3 - mF3.get(p), 2) + math.pow(c4 - mF4.get(p), 2) + math.pow(c5 - mF5.get(p), 2)
+            if not na(d) and d < worst
+                int slot = nnDist.indexof(worst)
+                float fut = mClose.get(p + i_horizon)
+                float nowPx = mClose.get(p)
+                nnDist.set(slot, d)
+                nnLabel.set(slot, fut > nowPx ? 1 : fut < nowPx ? -1 : 0)
+                worst := nnDist.max()
+
+    int ups   = 0
+    int downs = 0
+    for j = 0 to i_k - 1
+        if nnDist.get(j) < 1e10
+            nnFound += 1
+            ups     += nnLabel.get(j) == 1 ? 1 : 0
+            downs   += nnLabel.get(j) == -1 ? 1 : 0
+    if nnFound > 0
+        probUp   := ups * 100.0 / nnFound
+        probDown := downs * 100.0 / nnFound
+
+// ════════════════════════════════════════════════════════════
+// 4. الإشارات
+// ════════════════════════════════════════════════════════════
+bool barOk = not i_confirm or barstate.isconfirmed
+
+// أ) الإشارات الكبرى: SuperTrend + توقع AI فوق حد الثقة
+bool majorLongCond  = stUp and not na(probUp) and probUp >= i_conf
+bool majorShortCond = not stUp and not na(probDown) and probDown >= i_conf
+
+var int majorState = 0
+bool majorLong  = barOk and majorLongCond and majorState != 1
+bool majorShort = barOk and majorShortCond and majorState != -1
+if majorLong
+    majorState := 1
+if majorShort
+    majorState := -1
+
+// ب) الإشارات العادية
 bool condLong  = trendAi == 1 and close > emaFast and rsiVal > 50 and clv > 0
 bool condShort = trendAi == -1 and close < emaFast and rsiVal < 50 and clv < 0
-bool barOk     = not i_confirm or barstate.isconfirmed
+
+bool majorOnly = i_tradeMode == MODE_MAJOR
+bool entryLong  = majorOnly ? majorLong : condLong
+bool entryShort = majorOnly ? majorShort : condShort
 
 var int tradeState = 0
-bool trigLong  = barOk and condLong and tradeState != 1
-bool trigShort = barOk and condShort and tradeState != -1
+bool trigLong  = barOk and entryLong and tradeState != 1
+bool trigShort = barOk and entryShort and tradeState != -1
 
 if trigLong
     tradeState := 1
@@ -73,7 +207,7 @@ if trigShort
     tradeState := -1
 
 // ════════════════════════════════════════════════════════════
-// 4. الرسم الأساسي
+// 5. الرسم الأساسي
 // ════════════════════════════════════════════════════════════
 color baseCol = tradeState == 1 ? C_BULL : tradeState == -1 ? C_BEAR : C_NEUT
 plotcandle(open, high, low, close, "Quantum Candles", color = baseCol, wickcolor = baseCol, bordercolor = baseCol)
@@ -86,8 +220,21 @@ pTrend = plot(finalLine, "مسار الاتجاه", color = baseCol, linewidth =
 pEma   = plot(emaFast, "EMA", display = display.none)
 fill(pTrend, pEma, color = tradeState == 0 ? na : color.new(baseCol, 90), title = "تعبئة الاتجاه")
 
+plot(i_showMa50 ? ma50 : na, "المتوسط 50", color = C_MA50, linewidth = 2)
+plot(i_showMa200 ? ma200 : na, "المتوسط 200", color = C_MA200, linewidth = 2)
+
+bool stFlip = stDir != stDir[1]
+plot(i_showSt and not stFlip ? stLine : na, "SuperTrend", color = stUp ? color.new(C_BULL, 30) : color.new(C_BEAR, 30), linewidth = 2, style = plot.style_linebr)
+
+bgcolor(i_majorBg and majorLong ? color.new(C_BULL, 80) : i_majorBg and majorShort ? color.new(C_BEAR, 80) : na, title = "خلفية الإشارة الكبرى")
+
+if majorLong
+    label.new(bar_index, low - nz(atr14) * 1.5, "MAJOR LONG\n" + str.tostring(probUp, "#") + "%", color = C_BULL, textcolor = color.black, style = label.style_label_up, size = size.normal)
+if majorShort
+    label.new(bar_index, high + nz(atr14) * 1.5, "MAJOR SHORT\n" + str.tostring(probDown, "#") + "%", color = C_BEAR, textcolor = color.white, style = label.style_label_down, size = size.normal)
+
 // ════════════════════════════════════════════════════════════
-// 5. إدارة الصفقة (تتبع حي حتى الهدف أو الوقف)
+// 6. إدارة الصفقة (تتبع حي حتى الهدف أو الوقف)
 // ════════════════════════════════════════════════════════════
 var bool  inTrade  = false
 var int   tradeDir = 0
@@ -175,9 +322,11 @@ if trigLong or trigShort
     slLbl   := label.new(openX2, slPx, "SL " + str.tostring(slPx, format.mintick), style = label.style_label_left, color = C_SL, textcolor = color.black, size = size.tiny)
     tpLbl   := label.new(openX2, tpPx, "TP " + str.tostring(tpPx, format.mintick), style = label.style_label_left, color = tpCol, textcolor = tpTxt, size = size.tiny)
 
-    float sigY   = newDir == 1 ? low - nz(atr14) * 0.5 : high + nz(atr14) * 0.5
-    string sigTx = newDir == 1 ? "▲" : "▼"
-    label.new(bar_index, sigY, sigTx, color = tpCol, textcolor = tpTxt, size = size.small, style = newDir == 1 ? label.style_label_up : label.style_label_down)
+    // السهم الصغير للإشارات العادية فقط (الكبرى لها ملصقها الخاص)
+    if not majorOnly
+        float sigY   = newDir == 1 ? low - nz(atr14) * 0.5 : high + nz(atr14) * 0.5
+        string sigTx = newDir == 1 ? "▲" : "▼"
+        label.new(bar_index, sigY, sigTx, color = tpCol, textcolor = tpTxt, size = size.small, style = newDir == 1 ? label.style_label_up : label.style_label_down)
 
 // د) مد رسومات الصفقة المفتوحة مع السعر
 if inTrade
@@ -189,9 +338,9 @@ if inTrade
     tpLbl.set_x(liveX2)
 
 // ════════════════════════════════════════════════════════════
-// 6. لوحة التحكم (HUD) — تُنشأ مرة واحدة وتُحدّث على آخر شمعة فقط
+// 7. لوحة التحكم (HUD) — تُنشأ مرة واحدة وتُحدّث على آخر شمعة فقط
 // ════════════════════════════════════════════════════════════
-var table hud = table.new(position.bottom_right, 2, 8, bgcolor = color.new(#0A0E17, 20), border_width = 1, border_color = color.new(color.gray, 85))
+var table hud = table.new(position.bottom_right, 2, 11, bgcolor = color.new(#0A0E17, 20), border_width = 1, border_color = color.new(color.gray, 85))
 
 f_row(int row, string key, string val, color valCol) =>
     table.cell(hud, 0, row, key, text_color = color.white, text_size = size.small, text_halign = text.align_left)
@@ -199,26 +348,35 @@ f_row(int row, string key, string val, color valCol) =>
 
 if i_showHud and barstate.islast
     table.cell(hud, 0, 0, "HFJ QUANTUM", text_color = color.white, text_size = size.small, bgcolor = color.black)
-    table.cell(hud, 1, 0, "V8.6", text_color = color.gray, text_size = size.small, bgcolor = color.black)
+    table.cell(hud, 1, 0, "V9.0", text_color = color.gray, text_size = size.small, bgcolor = color.black)
+
+    // توقع الذكاء الاصطناعي
+    string aiTxt = na(probUp) ? "—" : probUp >= probDown ? "صعود " + str.tostring(probUp, "#") + "%" : "هبوط " + str.tostring(probDown, "#") + "%"
+    color  aiCol = na(probUp) ? color.gray : math.max(probUp, probDown) < i_conf ? color.gray : probUp >= probDown ? C_BULL : C_BEAR
+    f_row(1, "توقع AI (kNN)", aiTxt, aiCol)
+    f_row(2, "الجيران", str.tostring(nnFound) + " / " + str.tostring(i_k), color.white)
+    f_row(3, "SuperTrend", stUp ? "صاعد" : "هابط", stUp ? C_BULL : C_BEAR)
 
     string trendTxt = trendAi == 1 ? "صاعد" : trendAi == -1 ? "هابط" : "محايد"
     color  trendCol = trendAi == 1 ? C_BULL : trendAi == -1 ? C_BEAR : color.gray
-    f_row(1, "الاتجاه", trendTxt, trendCol)
-    f_row(2, "الزخم (RSI)", str.tostring(rsiVal, "#.0"), rsiVal > 50 ? C_BULL : C_BEAR)
+    f_row(4, "الاتجاه السريع", trendTxt, trendCol)
+    f_row(5, "الزخم (RSI)", str.tostring(rsiVal, "#.0"), rsiVal > 50 ? C_BULL : C_BEAR)
 
     string stateTxt = inTrade ? (tradeDir == 1 ? "شراء مفتوح ▲" : "بيع مفتوح ▼") : "انتظار"
-    f_row(3, "الحالة", stateTxt, inTrade ? baseCol : color.gray)
-    f_row(4, "الدخول", inTrade ? str.tostring(entryPx, format.mintick) : "—", color.white)
-    f_row(5, "الوقف", inTrade ? str.tostring(slPx, format.mintick) : "—", C_SL)
-    f_row(6, "الهدف", inTrade ? str.tostring(tpPx, format.mintick) : "—", inTrade ? baseCol : color.gray)
+    f_row(6, "الحالة", stateTxt, inTrade ? baseCol : color.gray)
+    f_row(7, "الدخول", inTrade ? str.tostring(entryPx, format.mintick) : "—", color.white)
+    f_row(8, "الوقف", inTrade ? str.tostring(slPx, format.mintick) : "—", C_SL)
+    f_row(9, "الهدف", inTrade ? str.tostring(tpPx, format.mintick) : "—", inTrade ? baseCol : color.gray)
 
     int    total = wins + losses
     string wrTxt = total > 0 ? str.tostring(wins * 100.0 / total, "#.0") + "% (" + str.tostring(wins) + "/" + str.tostring(total) + ")" : "—"
-    f_row(7, "نسبة النجاح", wrTxt, total > 0 and wins * 2 >= total ? C_BULL : C_BEAR)
+    f_row(10, "نسبة النجاح", wrTxt, total > 0 and wins * 2 >= total ? C_BULL : C_BEAR)
 
 // ════════════════════════════════════════════════════════════
-// 7. التنبيهات
+// 8. التنبيهات
 // ════════════════════════════════════════════════════════════
+alertcondition(majorLong, "MAJOR LONG Quantum", "HFJ Quantum: إشارة شراء كبرى (SuperTrend + AI) على {{ticker}} عند {{close}}")
+alertcondition(majorShort, "MAJOR SHORT Quantum", "HFJ Quantum: إشارة بيع كبرى (SuperTrend + AI) على {{ticker}} عند {{close}}")
 alertcondition(trigLong, "شراء Quantum", "HFJ Quantum: إشارة شراء جديدة على {{ticker}} عند {{close}}")
 alertcondition(trigShort, "بيع Quantum", "HFJ Quantum: إشارة بيع جديدة على {{ticker}} عند {{close}}")
 alertcondition(hitTp, "تحقق الهدف Quantum", "HFJ Quantum: تحقق الهدف على {{ticker}}")
