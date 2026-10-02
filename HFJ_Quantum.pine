@@ -1,0 +1,138 @@
+// © HFJ_Quantum_Strategy_2026
+// النسخة v8.4 - إصلاح ظهور خطوط وقف الخسارة وإدارة الذاكرة
+//@version=6
+indicator("HFJ Quantum v8.4 - Flawless Lines", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// ─── المدخلات الأساسية ───
+grp_ai = "محرك kNN (قائد الاتجاه)"
+input_knn_len = input.int(30, "نافذة البحث", group=grp_ai)
+input_rsi_len = input.int(14, "فترة RSI", group="الفلاتر")
+
+grp_visual = "التنسيق البصري المتناسق"
+input_rrRatio = input.float(2.0, "نسبة الهدف (R:R)", group=grp_visual)
+input_slLookback = input.int(5, "نطاق وقف الخسارة", minval=2, group=grp_visual)
+show_hud = input.bool(true, "إظهار لوحة التحكم (HUD)", group=grp_visual)
+
+// ─── لوحة ألوان "القناص الفاخرة" ───
+color color_bull_laser = #00FF88 // زمردي ليزري
+color color_bear_laser = #FF4400 // ياقوتي لاهب
+color color_sl_line    = #FFD700 // ذهبي ملكي للوقف
+color color_neut_gray  = #555555 // رمادي معدني
+color color_bg_hud     = color.new(#0A0E17, 20) 
+
+// ────────────────────────────────────────────────────────────
+// 1. المحركات (kNN & Filters)
+// ────────────────────────────────────────────────────────────
+f_knn_trend() =>
+    int pos_count = 0
+    int neg_count = 0
+    float atr_val = ta.atr(10)
+    for i = 1 to input_knn_len
+        if math.abs(close - close[i]) < atr_val
+            if close[i] > open[i]
+                pos_count += 1
+            else
+                neg_count += 1
+    pos_count > neg_count ? 1 : -1
+
+int trend_ai = f_knn_trend()
+float rsi_val = ta.rsi(close, input_rsi_len)
+float ema_fast = ta.ema(close, 9)
+float raw_clv = ( (close - low) - (high - close) ) / (high - low > 0 ? high - low : 0.001)
+float smoothed_clv = ta.sma(raw_clv, 3) 
+
+// ────────────────────────────────────────────────────────────
+// 2. منطق الإشارات ونظام الحالة
+// ────────────────────────────────────────────────────────────
+bool condition_long  = (trend_ai == 1) and (close > ema_fast) and (rsi_val > 50) and (smoothed_clv > 0)
+bool condition_short = (trend_ai == -1) and (close < ema_fast) and (rsi_val < 50) and (smoothed_clv < 0)
+
+var int trade_state = 0 
+bool trigger_long  = condition_long and trade_state != 1
+bool trigger_short = condition_short and trade_state != -1
+
+if trigger_long
+    trade_state := 1
+if trigger_short
+    trade_state := -1
+
+// ────────────────────────────────────────────────────────────
+// 3. التصميم البصري المتناسق (Synced Aesthetics)
+// ────────────────────────────────────────────────────────────
+color candle_base_col = trade_state == 1 ? color_bull_laser : trade_state == -1 ? color_bear_laser : color_neut_gray
+plotcandle(open, high, low, close, title="Quantum Candles", color=candle_base_col, wickcolor=candle_base_col, bordercolor=candle_base_col)
+
+var float track_line = close
+track_line := track_line + 0.15 * (close - track_line)
+float final_line = ta.wma(track_line, 5)
+
+p_trend = plot(final_line, color=candle_base_col, linewidth=3, title="مسار الاتجاه")
+p_ema   = plot(ema_fast, display=display.none)
+fill(p_trend, p_ema, color = trade_state == 1 ? color.new(color_bull_laser, 90) : trade_state == -1 ? color.new(color_bear_laser, 90) : na)
+
+// ────────────────────────────────────────────────────────────
+// 4. إدارة الخطوط (الإصلاح الجذري للوقف والأهداف)
+// ────────────────────────────────────────────────────────────
+// حساب الوقف اللحظي خارج الشروط (لتجنب الأخطاء)
+float current_lowest = ta.lowest(low, input_slLookback)
+float current_highest = ta.highest(high, input_slLookback)
+
+// استخدام مصفوفات لحفظ الخطوط والملصقات ومسحها بأمان
+var line[] sl_lines = array.new_line()
+var line[] tp_lines = array.new_line()
+var label[] signal_labels = array.new_label()
+
+// دالة لمسح الرسوم القديمة
+f_clear_drawings() =>
+    if array.size(sl_lines) > 0
+        for i = 0 to array.size(sl_lines) - 1
+            line.delete(array.get(sl_lines, i))
+        array.clear(sl_lines)
+    if array.size(tp_lines) > 0
+        for i = 0 to array.size(tp_lines) - 1
+            line.delete(array.get(tp_lines, i))
+        array.clear(tp_lines)
+
+if trigger_long
+    f_clear_drawings()
+    
+    float sl_val = current_lowest
+    float tp_val = close + (close - sl_val) * input_rrRatio
+    
+    // رسم وحفظ الخطوط الجديدة
+    array.push(sl_lines, line.new(bar_index, sl_val, bar_index + 20, sl_val, color=color_sl_line, width=2, style=line.style_dashed))
+    array.push(tp_lines, line.new(bar_index, tp_val, bar_index + 20, tp_val, color=color_bull_laser, width=2, style=line.style_dashed))
+    
+    label.new(bar_index, low - ta.atr(14)*0.5, "▲", color=color_bull_laser, style=label.style_label_up, textcolor=color.black, size=size.small)
+
+if trigger_short
+    f_clear_drawings()
+    
+    float sl_val = current_highest
+    float tp_val = close - (sl_val - close) * input_rrRatio
+    
+    // رسم وحفظ الخطوط الجديدة
+    array.push(sl_lines, line.new(bar_index, sl_val, bar_index + 20, sl_val, color=color_sl_line, width=2, style=line.style_dashed))
+    array.push(tp_lines, line.new(bar_index, tp_val, bar_index + 20, tp_val, color=color_bear_laser, width=2, style=line.style_dashed))
+    
+    label.new(bar_index, high + ta.atr(14)*0.5, "▼", color=color_bear_laser, style=label.style_label_down, textcolor=color.white, size=size.small)
+
+// ────────────────────────────────────────────────────────────
+// 5. لوحة التحكم (HUD)
+// ────────────────────────────────────────────────────────────
+if show_hud
+    var table hud = table.new(position.bottom_right, 2, 4, bgcolor=color_bg_hud, border_width=1, border_color=color.new(color.gray, 85))
+    if barstate.islast
+        table.cell(hud, 0, 0, "HFJ QUANTUM", text_color=color.white, text_size=size.small, bgcolor=color.new(#000000, 0))
+        table.cell(hud, 1, 0, "V8.4", text_color=color.gray, text_size=size.small, bgcolor=color.new(#000000, 0))
+        table.cell(hud, 0, 1, "الاتجاه", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(hud, 1, 1, trend_ai == 1 ? "صاعد" : "هابط", text_color=trend_ai == 1 ? color_bull_laser : color_bear_laser, text_size=size.small)
+        table.cell(hud, 0, 2, "الزخم", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(hud, 1, 2, rsi_val > 50 ? "قوي" : "ضعيف", text_color=rsi_val > 50 ? color_bull_laser : color_bear_laser, text_size=size.small)
+        string state_txt = trade_state == 1 ? "شراء ▲" : trade_state == -1 ? "بيع ▼" : "انتظار"
+        table.cell(hud, 0, 3, "الحالة", text_color=color.white, text_size=size.small, text_halign=text.align_left)
+        table.cell(hud, 1, 3, state_txt, text_color=candle_base_col, text_size=size.small)
+
+// التنبيهات
+alertcondition(trigger_long, "شراء Quantum", "إشارة شراء جديدة")
+alertcondition(trigger_short, "بيع Quantum", "إشارة بيع جديدة")
