@@ -1,23 +1,22 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// النسخة v10.0 - kNN + SuperTrend + كتل الأوامر (OB/Breaker) + نطاق الافتتاح (ORB) + مناطق السيولة مع Volume Delta
+// النسخة v10.1 - إعدادات مرتبة بنظام الوحدات (MODULES) + kNN + SuperTrend + كتل الأوامر (OB/Breaker) + نطاق الافتتاح (ORB) + مناطق السيولة مع Volume Delta
 //@version=6
-indicator("HFJ Quantum v10.0", shorttitle = "HFJ Q", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 500)
+indicator("HFJ Quantum v10.1", shorttitle = "HFJ Q", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 500)
 
 // ════════════════════════════════════════════════════════════
 // 0. الثوابت والأنواع
 // ════════════════════════════════════════════════════════════
-const string GRP_SIG    = "عرض الإشارات"
-const string GRP_ML     = "محرك التعلم الآلي (kNN)"
-const string GRP_MAJOR  = "الإشارات الكبرى (SuperTrend + AI)"
-const string GRP_OB     = "كتل الأوامر (Order Blocks)"
-const string GRP_ORB    = "نطاق الافتتاح (ORB)"
-const string GRP_LIQ    = "مناطق السيولة (Liquidity Zones)"
-const string GRP_AI     = "فلتر الاتجاه السريع"
-const string GRP_FILTER = "الفلاتر"
-const string GRP_MA     = "المتوسطات المتحركة"
-const string GRP_RISK   = "إدارة المخاطر"
-const string GRP_VISUAL = "التنسيق البصري"
+const string GRP_MOD    = "MODULES"
+const string GRP_SIG    = "TREND SIGNAL SETTINGS"
+const string GRP_ML     = "AI ENGINE SETTINGS (kNN)"
+const string GRP_LIQ    = "LIQUIDITY SETTINGS"
+const string GRP_ORB    = "ORB SETTINGS"
+const string GRP_OB     = "ORDERBLOCK SETTINGS"
+const string GRP_FILTER = "FILTER SETTINGS"
+const string GRP_MA     = "MOVING AVERAGE SETTINGS"
+const string GRP_RISK   = "CAPITAL RISK SETTINGS"
+const string GRP_VISUAL = "DISPLAY SETTINGS"
 
 const string MODE_ALL   = "كل الإشارات"
 const string MODE_MAJOR = "الإشارات الكبرى فقط"
@@ -57,60 +56,70 @@ type LiqZone
 // ════════════════════════════════════════════════════════════
 // 1. المدخلات
 // ════════════════════════════════════════════════════════════
-bool  i_showMajorSig = input.bool(true, "إظهار الإشارات الكبرى (MAJOR)", group = GRP_SIG)
-bool  i_showRegular  = input.bool(false, "إظهار الإشارات العادية (▲▼)", group = GRP_SIG, tooltip = "الإشارات السريعة المبنية على RSI/EMA. مخفية افتراضياً للاعتماد على الإشارات القوية فقط")
-bool  i_showHistory  = input.bool(true, "إظهار الإشارات التاريخية", group = GRP_SIG, tooltip = "عند الإيقاف يبقى آخر إشارة فقط من كل نوع على الشارت")
+// --- الوحدات (تشغيل / إيقاف) ---
+bool  i_showMajorSig = input.bool(true,  "Major Signals",   group = GRP_MOD, tooltip = "الإشارات الكبرى: SuperTrend + توقع AI")
+bool  i_showRegular  = input.bool(false, "Regular Signals", inline = "m1", group = GRP_MOD, tooltip = "الإشارات السريعة المبنية على RSI/EMA")
+bool  i_showOrb      = input.bool(true,  "ORB",             inline = "m1", group = GRP_MOD)
+bool  i_showLiq      = input.bool(true,  "Liquidity",       inline = "m1", group = GRP_MOD)
+bool  i_showOb       = input.bool(true,  "Order Blocks",    inline = "m2", group = GRP_MOD)
+bool  i_showSt       = input.bool(true,  "SuperTrend",      inline = "m2", group = GRP_MOD)
+bool  i_showHud      = input.bool(true,  "Dashboard",       inline = "m2", group = GRP_MOD)
 
-int   i_mlLookback = input.int(1000, "عدد الشموع التاريخية للمقارنة", minval = 100, maxval = 5000, group = GRP_ML, tooltip = "المحرك يقارن الوضع الحالي بهذا العدد من الشموع السابقة")
-int   i_k          = input.int(10, "عدد الجيران الأقرب (K)", minval = 3, maxval = 50, group = GRP_ML)
-int   i_horizon    = input.int(4, "أفق التوقع (شموع)", minval = 1, maxval = 50, group = GRP_ML, tooltip = "هل ارتفع السعر أم انخفض بعد هذا العدد من الشموع؟ هذا ما يتعلمه المحرك من كل جار")
-int   i_stride     = input.int(2, "تباعد العينات", minval = 1, maxval = 10, group = GRP_ML, tooltip = "1 = مقارنة كل شمعة. رفع القيمة يسرّع الحساب ويقلل تكرار الجيران المتلاصقة")
-int   i_mlBars     = input.int(3000, "تشغيل المحرك على آخر N شمعة", minval = 100, maxval = 20000, group = GRP_ML, tooltip = "لتسريع تحميل المؤشر. قبل ذلك لا يُحسب التوقع")
+// --- إشارات الاتجاه ---
+float i_stFactor   = input.float(3.0, "Sensitivity", minval = 0.5, step = 0.1, inline = "s1", group = GRP_SIG, tooltip = "معامل SuperTrend. أقل = إشارات أكثر، أعلى = إشارات أقل وأقوى")
+int   i_stAtr      = input.int(10, "ATR", minval = 1, inline = "s1", group = GRP_SIG)
+float i_conf       = input.float(90.0, "AI Confidence %", minval = 50.0, maxval = 100.0, step = 5.0, group = GRP_SIG, tooltip = "لا تظهر الإشارة الكبرى إلا إذا تجاوزت نسبة توقع AI هذا الحد واتفقت مع SuperTrend")
+bool  i_majorBg    = input.bool(true, "Signal Background", inline = "s2", group = GRP_SIG, tooltip = "تلوين خلفية شمعة الإشارة الكبرى")
+bool  i_showHistory = input.bool(true, "History", inline = "s2", group = GRP_SIG, tooltip = "عند الإيقاف يبقى آخر إشارة فقط من كل نوع على الشارت")
+bool  i_confirm    = input.bool(true, "Confirm on bar close", group = GRP_SIG, tooltip = "يمنع ظهور واختفاء الإشارة أثناء تكوّن الشمعة (بدون إعادة رسم)")
 
-float i_stFactor   = input.float(3.0, "معامل SuperTrend", minval = 0.5, step = 0.1, group = GRP_MAJOR)
-int   i_stAtr      = input.int(10, "فترة ATR لـ SuperTrend", minval = 1, group = GRP_MAJOR)
-float i_conf       = input.float(90.0, "حد ثقة الذكاء الاصطناعي %", minval = 50.0, maxval = 100.0, step = 5.0, group = GRP_MAJOR, tooltip = "لا تظهر الإشارة الكبرى إلا إذا تجاوزت نسبة توقع AI هذا الحد واتفقت مع SuperTrend")
-bool  i_showSt     = input.bool(true, "إظهار خط SuperTrend", group = GRP_MAJOR)
-bool  i_majorBg    = input.bool(true, "تلوين خلفية شمعة الإشارة الكبرى", group = GRP_MAJOR)
+// --- محرك الذكاء الاصطناعي ---
+int   i_mlLookback = input.int(1000, "Lookback", minval = 100, maxval = 5000, inline = "a1", group = GRP_ML, tooltip = "المحرك يقارن الوضع الحالي بهذا العدد من الشموع السابقة")
+int   i_k          = input.int(10, "K", minval = 3, maxval = 50, inline = "a1", group = GRP_ML, tooltip = "عدد الجيران الأقرب")
+int   i_horizon    = input.int(4, "Horizon", minval = 1, maxval = 50, inline = "a2", group = GRP_ML, tooltip = "هل ارتفع السعر أم انخفض بعد هذا العدد من الشموع؟ هذا ما يتعلمه المحرك من كل جار")
+int   i_stride     = input.int(2, "Stride", minval = 1, maxval = 10, inline = "a2", group = GRP_ML, tooltip = "1 = مقارنة كل شمعة. رفع القيمة يسرّع الحساب")
+int   i_mlBars     = input.int(3000, "Run on last N bars", minval = 100, maxval = 20000, group = GRP_ML, tooltip = "لتسريع تحميل المؤشر. قبل ذلك لا يُحسب التوقع")
+int   i_knnLen     = input.int(30, "Fast Trend Window", minval = 2, maxval = 200, group = GRP_ML, tooltip = "عدد الشموع السابقة التي يقارن بها فلتر الاتجاه السريع السعر الحالي")
 
-bool  i_showOb     = input.bool(true, "تفعيل كتل الأوامر", group = GRP_OB)
-int   i_obLen      = input.int(5, "طول المحور (شموع)", minval = 2, maxval = 50, group = GRP_OB, tooltip = "الشمعة المحورية يجب أن يكون حجمها الأعلى بين هذا العدد من الشموع قبلها وبعدها")
-float i_obVolMult  = input.float(1.5, "الحد الأدنى للحجم (× المتوسط)", minval = 0.5, step = 0.1, group = GRP_OB)
-float i_obMed      = input.float(2.0, "حد القوة Medium (× المتوسط)", minval = 1.0, step = 0.1, group = GRP_OB)
-float i_obHigh     = input.float(3.0, "حد القوة High (× المتوسط)", minval = 1.0, step = 0.1, group = GRP_OB)
-bool  i_obBreaker  = input.bool(true, "تفعيل Breaker Blocks", group = GRP_OB, tooltip = "عند كسر الكتلة تتحول إلى Breaker بدلاً من حذفها: الدعم المكسور يصبح مقاومة والعكس")
-int   i_obMax      = input.int(8, "أقصى عدد للكتل", minval = 1, maxval = 50, group = GRP_OB)
+// --- السيولة ---
+int   i_liqLen     = input.int(10, "Length", minval = 2, maxval = 50, inline = "l1", group = GRP_LIQ, tooltip = "طول المحور (شموع)")
+int   i_liqMax     = input.int(8, "Max", minval = 1, maxval = 50, inline = "l1", group = GRP_LIQ)
+bool  i_liqDelta   = input.bool(true, "Volume Delta (Bull% / Bear% / Δ)", group = GRP_LIQ)
 
-bool  i_showOrb    = input.bool(true, "تفعيل نطاق الافتتاح", group = GRP_ORB, tooltip = "يعمل على الفريمات اللحظية فقط (أقل من يومي)")
-string i_orbSess   = input.session("0930-1000", "فترة نطاق الافتتاح", group = GRP_ORB, tooltip = "بتوقيت البورصة. للأسهم الأمريكية 0930-1000 = أول 30 دقيقة")
-int   i_orbDays    = input.int(3, "عدد الأيام المعروضة", minval = 1, maxval = 30, group = GRP_ORB)
+// --- ORB ---
+int    i_orbUtc    = input.int(3, "+/- UTC", minval = -12, maxval = 14, group = GRP_ORB, tooltip = "فرق التوقيت عن UTC للجلسة. البورصة المصرية +3، لندن 0، نيويورك -4 صيفاً")
+string i_orbSess   = input.session("0930-1000", "Session", group = GRP_ORB, tooltip = "يعمل على الفريمات اللحظية فقط (أقل من يومي)")
+int    i_orbDays   = input.int(3, "Days to show", minval = 1, maxval = 30, group = GRP_ORB)
 
-bool  i_showLiq    = input.bool(true, "تفعيل مناطق السيولة", group = GRP_LIQ)
-int   i_liqLen     = input.int(10, "طول المحور (شموع)", minval = 2, maxval = 50, group = GRP_LIQ)
-int   i_liqMax     = input.int(8, "أقصى عدد للمناطق", minval = 1, maxval = 50, group = GRP_LIQ)
-bool  i_liqDelta   = input.bool(true, "عرض تحليل الحجم (Bull% / Bear% / Delta)", group = GRP_LIQ)
+// --- كتل الأوامر ---
+bool  i_obBreaker  = input.bool(true, "Breaker Block", inline = "b1", group = GRP_OB, tooltip = "عند كسر الكتلة تتحول إلى Breaker بدلاً من حذفها: الدعم المكسور يصبح مقاومة والعكس")
+int   i_obMax      = input.int(8, "Max", minval = 1, maxval = 50, inline = "b1", group = GRP_OB)
+int   i_obLen      = input.int(5, "Pivot Length", minval = 2, maxval = 50, group = GRP_OB, tooltip = "الشمعة المحورية يجب أن يكون حجمها الأعلى بين هذا العدد من الشموع قبلها وبعدها")
+float i_obVolMult  = input.float(1.5, "Min Volume ×", minval = 0.5, step = 0.1, group = GRP_OB)
+float i_obMed      = input.float(2.0, "Medium ×", minval = 1.0, step = 0.1, inline = "b2", group = GRP_OB)
+float i_obHigh     = input.float(3.0, "High ×", minval = 1.0, step = 0.1, inline = "b2", group = GRP_OB)
 
-int   i_knnLen     = input.int(30, "نافذة البحث", minval = 2, maxval = 200, group = GRP_AI, tooltip = "عدد الشموع السابقة التي يقارن بها الفلتر السعر الحالي")
+// --- الفلاتر ---
+int   i_rsiLen     = input.int(14, "RSI Length", minval = 2, inline = "f1", group = GRP_FILTER)
+int   i_emaLen     = input.int(9, "EMA Length", minval = 1, inline = "f1", group = GRP_FILTER)
 
-int   i_rsiLen     = input.int(14, "فترة RSI", minval = 2, group = GRP_FILTER)
-int   i_emaLen     = input.int(9, "فترة EMA السريع", minval = 1, group = GRP_FILTER)
-bool  i_confirm    = input.bool(true, "تأكيد الإشارة عند إغلاق الشمعة", group = GRP_FILTER, tooltip = "يمنع ظهور واختفاء الإشارة أثناء تكوّن الشمعة (بدون إعادة رسم)")
-
-bool  i_showMa50   = input.bool(true, "إظهار المتوسط 50", inline = "ma50", group = GRP_MA)
+// --- المتوسطات المتحركة ---
+bool  i_showMa50   = input.bool(true, "MA 50", inline = "ma50", group = GRP_MA)
 int   i_ma50Len    = input.int(50, "", minval = 1, inline = "ma50", group = GRP_MA)
-bool  i_showMa200  = input.bool(true, "إظهار المتوسط 200", inline = "ma200", group = GRP_MA)
+bool  i_showMa200  = input.bool(true, "MA 200", inline = "ma200", group = GRP_MA)
 int   i_ma200Len   = input.int(200, "", minval = 1, inline = "ma200", group = GRP_MA)
-string i_maType    = input.string("EMA", "نوع المتوسط", options = ["EMA", "SMA"], group = GRP_MA)
+string i_maType    = input.string("EMA", "Type", options = ["EMA", "SMA"], group = GRP_MA)
 
-string i_tradeMode = input.string(MODE_MAJOR, "فتح الصفقات على", options = [MODE_ALL, MODE_MAJOR], group = GRP_RISK)
-float i_rr         = input.float(2.0, "نسبة الهدف (R:R)", minval = 0.1, step = 0.1, group = GRP_RISK)
-int   i_slLookback = input.int(5, "نطاق وقف الخسارة (شموع)", minval = 2, group = GRP_RISK)
-float i_slBuffer   = input.float(0.1, "هامش الوقف (× ATR)", minval = 0.0, step = 0.05, group = GRP_RISK)
+// --- إدارة المخاطر ---
+string i_tradeMode = input.string(MODE_MAJOR, "Trade on", options = [MODE_ALL, MODE_MAJOR], group = GRP_RISK)
+float i_rr         = input.float(2.0, "RR Ratio", minval = 0.1, step = 0.1, group = GRP_RISK)
+int   i_slLookback = input.int(5, "SL Lookback (bars)", minval = 2, group = GRP_RISK)
+float i_slBuffer   = input.float(0.1, "SL Buffer (× ATR)", minval = 0.0, step = 0.05, group = GRP_RISK)
 
-int   i_ext        = input.int(10, "امتداد الخطوط أمام السعر", minval = 1, maxval = 100, group = GRP_VISUAL)
-int   i_history    = input.int(3, "عدد الصفقات السابقة على الشارت", minval = 0, maxval = 50, group = GRP_VISUAL)
-int   i_zoneExt    = input.int(15, "امتداد المناطق أمام السعر", minval = 1, maxval = 200, group = GRP_VISUAL)
-bool  i_showHud    = input.bool(true, "إظهار لوحة التحكم (HUD)", group = GRP_VISUAL)
+// --- العرض ---
+int   i_ext        = input.int(10, "Trade lines extend", minval = 1, maxval = 100, group = GRP_VISUAL)
+int   i_history    = input.int(3, "Past trades shown", minval = 0, maxval = 50, group = GRP_VISUAL)
+int   i_zoneExt    = input.int(15, "Zones extend", minval = 1, maxval = 200, group = GRP_VISUAL)
 
 // ════════════════════════════════════════════════════════════
 // 2. الحسابات (كل دوال ta.* تُستدعى على كل شمعة وفي النطاق العام)
@@ -370,7 +379,8 @@ if obs.size() > 0
 // 7. نطاق الافتتاح (ORB - Opening Range Breakout)
 // ════════════════════════════════════════════════════════════
 bool orbTfOk  = timeframe.isintraday
-bool inOrb    = i_showOrb and orbTfOk and not na(time(timeframe.period, i_orbSess))
+string orbTz  = "UTC" + (i_orbUtc >= 0 ? "+" : "-") + str.tostring(math.abs(i_orbUtc))
+bool inOrb    = i_showOrb and orbTfOk and not na(time(timeframe.period, i_orbSess, orbTz))
 bool orbStart = inOrb and not inOrb[1]
 bool orbEnd   = not inOrb and inOrb[1]
 bool newDay   = timeframe.change("D")
@@ -631,7 +641,7 @@ f_row(int row, string key, string val, color valCol) =>
 
 if i_showHud and barstate.islast
     table.cell(hud, 0, 0, "HFJ QUANTUM", text_color = color.white, text_size = size.small, bgcolor = color.black)
-    table.cell(hud, 1, 0, "V10.0", text_color = color.gray, text_size = size.small, bgcolor = color.black)
+    table.cell(hud, 1, 0, "V10.1", text_color = color.gray, text_size = size.small, bgcolor = color.black)
 
     // توقع الذكاء الاصطناعي
     string aiTxt = na(probUp) ? "—" : probUp >= probDown ? "صعود " + str.tostring(probUp, "#") + "%" : "هبوط " + str.tostring(probDown, "#") + "%"
