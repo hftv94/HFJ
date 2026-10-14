@@ -1,6 +1,6 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// HFJ Pro Suite v2.2 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
+// HFJ Pro Suite v3.0 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
 // الوحدات: إشارات الاتجاه (▲ / ▲+) + علامات TP ✓ + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
 //@version=6
 indicator("HFJ Pro Suite", shorttitle = "HFJ Pro", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
@@ -19,26 +19,35 @@ const string G_RISK = "CAPITAL RISK SETTINGS"
 const string G_VOL  = "VOLUME SCREENER"
 const string G_SYM  = "SYMBOLS"
 
-const color C_UP    = #26C6B0 // تركوازي (صاعد)
-const color C_DN    = #F23645 // أحمر (هابط)
+const color C_UP    = #33CFBB // تركوازي (صاعد)
+const color C_DN    = #DD3024 // أحمر (هابط)
 const color C_TP    = #4CAF50 // علامة الهدف ✓
 const color C_SL    = #FFD600
 const color C_TXT   = #FFFFFF
-const color C_DOT   = #2962FF // دوائر مستويات ORB
+const color C_ORB_U = #57B4BA // اختراق ORB صاعد
+const color C_ORB_D = #FE4F2D // اختراق ORB هابط
+const color C_ORB_S = #00BCD4 // خلفية جلسة ORB
 const color C_BSL   = #F23645
 const color C_SSL   = #089981
 const color C_SWEPT = #787B86
 const color C_OB_UP = #00BFA5
 const color C_OB_DN = #FF5252
-const color C_BRK   = #FF9800
+const color C_BRK   = #787B86
+
+// محرك الإشارات: المعامل الفعلي = Sensitivity × هذا الرقم (1.7 × 2.35 ≈ 4.0 وهو الأقرب للأصلي)
+const float SIG_MULT = 2.35
 
 type Liq
-    box   bx
+    box   bx           // المنطقة
+    box   bb           // شريط Bull
+    box   sb           // شريط Bear
+    box   db           // صندوق Delta
+    line  ml           // خط المنتصف
+    int   x1
     float top
     float bot
     int   dir          // 1 = سيولة قمة، -1 = سيولة قاع
-    float bv = 0.0     // حجم الشراء داخل المنطقة
-    float sv = 0.0     // حجم البيع داخل المنطقة
+    float bp           // نسبة الشراء %
 
 type TLine
     line  ln
@@ -49,19 +58,18 @@ type TLine
 
 type OB
     box   bx
+    int   x1
     float top
     float bot
     int   dir          // 1 = من قاع (طلب)، -1 = من قمة (عرض)
     bool  breaker = false
 
 type OrbSet
-    int          x1
-    line         hi
-    line         mid
-    line         lo
-    box          up
-    box          dn
-    array<label> dots
+    line hi
+    line mid
+    line lo
+    box  up
+    box  dn
 
 // ════════════════════════════════════════════════════════════
 // 1. المدخلات
@@ -92,8 +100,8 @@ bool  s_confirm = input.bool(true, "Confirm on bar close", group = G_SIG, toolti
 
 // --- السيولة ---
 int   l_len   = input.int(10, "Length", minval = 2, maxval = 50, inline = "l1", group = G_LIQ, tooltip = "القمة/القاع يجب أن يكون أعلى/أدنى من هذا العدد من الشموع قبله وبعده")
-int   l_max   = input.int(5,  "Max",    minval = 1, maxval = 50, inline = "l1", group = G_LIQ, tooltip = "عدد المناطق المعروضة. تُحذف الأبعد عن السعر أولاً")
-int   l_ext   = input.int(5,  "Extend", minval = 1, maxval = 100, group = G_LIQ)
+int   l_max   = input.int(5,  "Max",    minval = 1, maxval = 20, inline = "l1", group = G_LIQ, tooltip = "عدد المناطق لكل جهة (قمم/قيعان). تُحذف الأبعد عن السعر أولاً")
+int   l_ext   = input.int(20, "Extend", minval = 1, maxval = 100, group = G_LIQ, tooltip = "امتداد المنطقة أمام السعر (شموع)")
 float l_depth = input.float(0.85, "Zone depth (× ATR 200)", minval = 0.1, step = 0.05, group = G_LIQ, tooltip = "سُمك المنطقة من رأس الذيل إلى الداخل")
 
 // --- ORB ---
@@ -102,7 +110,7 @@ string o_sess = input.session("0945-1015", "Session", inline = "o1", group = G_O
 color  o_colU = input.color(#1E3A5F99, "", inline = "o1", group = G_ORB)
 color  o_colD = input.color(#5D2E0C99, "", inline = "o1", group = G_ORB)
 bool   o_sig  = input.bool(true, "Signals", group = G_ORB)
-int    o_days = input.int(3, "Days to show", minval = 1, maxval = 10, group = G_ORB)
+int    o_days = input.int(30, "Days to show", minval = 1, maxval = 150, group = G_ORB)
 
 // --- خطوط الاتجاه ---
 string t_sens = input.string("Medium", "", options = ["Small", "Medium", "Large"], inline = "t1", group = G_TL)
@@ -113,7 +121,8 @@ bool   t_hist = input.bool(false, "History", group = G_TL, tooltip = "إبقاء
 // --- كتل الأوامر ---
 string ob_preset  = input.string("Macro", "Preset", options = ["Macro", "Big", "Medium", "Small"], inline = "b1", group = G_OB, tooltip = "حجم القمة/القاع المطلوب: Macro = 100 شمعة على كل جانب، Big = 50، Medium = 25، Small = 10")
 bool   ob_breaker = input.bool(false, "Breaker Block", inline = "b1", group = G_OB)
-int    ob_max     = input.int(5, "Max blocks per side", minval = 1, maxval = 20, group = G_OB)
+int    ob_max     = input.int(3, "Max blocks per side", minval = 1, maxval = 20, group = G_OB)
+int    ob_age     = input.int(300, "Max age (bars)", minval = 20, maxval = 1000, group = G_OB, tooltip = "تُحذف الكتل الأقدم من هذا العدد من الشموع")
 
 // --- RMI ---
 int   r_len   = input.int(14, "RMI Length", minval = 2, group = G_RMI)
@@ -168,7 +177,7 @@ float ema5Chg = ta.change(ta.ema(close, 5))
 bool  barOk   = not s_confirm or barstate.isconfirmed
 bool  conf    = barstate.isconfirmed
 
-[stLine, stDir] = ta.supertrend(s_sens, s_atrLen)
+[stLine, stDir] = ta.supertrend(s_sens * SIG_MULT, s_atrLen)
 int trend = stDir < 0 ? 1 : -1
 
 // الحجم (بعض أزواج الفوركس بدون حجم — الوحدات تتعامل مع ذلك تلقائياً)
@@ -197,7 +206,6 @@ float obPl   = ta.pivotlow(low, ob_len, ob_len)
 // ORB
 string o_tz   = "UTC" + (o_utc >= 0 ? "+" : "-") + str.tostring(math.abs(o_utc))
 bool   inOrb  = m_orb and timeframe.isintraday and not na(time(timeframe.period, o_sess, o_tz))
-bool   newDay = ta.change(dayofmonth(time, o_tz)) != 0
 
 // تحويل عملة الرمز إلى عملة الحساب
 float fxRate = request.currency_rate(syminfo.currency, c_cur, ignore_invalid_currency = true)
@@ -225,7 +233,9 @@ plotshape(strongSell ? high + sigOff : na, "Sell Label +", shape.labeldown, loca
 
 
 // الشموع
-color candleCol = trend == 1 ? C_UP : C_DN
+// اللون يتغير بعد الإشارة بشمعة واحدة (مثل الأصلي)
+int   cState    = nz(sigState[1], trend)
+color candleCol = cState == 1 ? C_UP : C_DN
 bool  showCnd   = m_sig and s_candles
 plotcandle(showCnd ? open : na, showCnd ? high : na, showCnd ? low : na, showCnd ? close : na, "PlotCandle", color = candleCol, wickcolor = candleCol, bordercolor = candleCol)
 barcolor(showCnd ? candleCol : na, title = "Bar Color")
@@ -293,7 +303,7 @@ else if tDir != 0
 
 // الوقف المتحرك: يتبع السعر بمسافة ATR × Trailing TP ولا يرجع للخلف
 if trailLive and tDir != 0
-    float cand = close - tDir * s_trailR * nz(atr14)
+    float cand = tDir == 1 ? low - s_trailR * nz(atr14) : high + s_trailR * nz(atr14) // من طرف الذيل
     trail := na(trail) ? cand : tDir == 1 ? math.max(trail, cand) : math.min(trail, cand)
     if not newSig and barOk and (tDir == 1 ? close < trail : close > trail)
         trailLive := false
@@ -307,13 +317,11 @@ plot(showTrail and tDir == 1 ? trail : na, "Up Trend", color = C_TP, linewidth =
 plot(showTrail and tDir == -1 ? trail : na, "Down Trend", color = C_DN, linewidth = 2, style = plot.style_steplinebr)
 
 // ════════════════════════════════════════════════════════════
-// 5. السيولة (مناطق من رأس الذيل + Bull/Bear/Delta)
+// 5. السيولة (منطقة + أشرطة Bull/Bear + صندوق Delta)
 // ════════════════════════════════════════════════════════════
 var array<Liq> liqs = array.new<Liq>()
-bool  liqSweepUp = false // ذيل دخل فوق منطقة قمة وأغلق دونها
-bool  liqSweepDn = false // ذيل دخل تحت منطقة قاع وأغلق فوقها
-float liqBuyV    = high > low ? vol * (close - low) / (high - low) : vol * 0.5
-float liqSellV   = vol - liqBuyV
+bool liqSweepUp = false // ذيل دخل فوق منطقة قمة وأغلق دونها
+bool liqSweepDn = false // ذيل دخل تحت منطقة قاع وأغلق فوقها
 
 f_liqOverlap(float top, float bot, int d) =>
     bool hit = false
@@ -322,51 +330,97 @@ f_liqOverlap(float top, float bot, int d) =>
             hit := true
     hit
 
-f_liqText(Liq z) =>
-    float tot = z.bv + z.sv
-    tot > 0 ? "Bull " + str.tostring(z.bv / tot * 100, "#") + "% | Bear " + str.tostring(z.sv / tot * 100, "#") + "% | Del " + str.tostring(z.bv - z.sv, format.volume) : ""
+f_liqDelete(Liq z) =>
+    z.bx.delete()
+    z.ml.delete()
+    if not na(z.bb)
+        z.bb.delete()
+        z.sb.delete()
+        z.db.delete()
+    true
+
+// يرسم المنطقة: صندوق خارجي، خط منتصف متقطع، شريطا Bull/Bear بطول النسبة، وصندوق Delta أمامها
+f_liqNew(float top, float bot, int d) =>
+    int   x1  = bar_index - l_len
+    int   x2  = bar_index + l_ext
+    float mid = (top + bot) / 2
+    color c   = d == 1 ? C_BSL : C_SSL
+    box  bx = box.new(x1, top, x2, bot, border_color = color.new(c, 50), bgcolor = color.new(c, 88))
+    line ml = line.new(x1, mid, x2, mid, color = color.new(c, 40), style = line.style_dashed)
+    box  bb = na
+    box  sb = na
+    box  db = na
+    float bp = na
+    if hasVol
+        // نسبة الشراء/البيع من شموع نافذة القمة/القاع (صاعدة = شراء، هابطة = بيع)
+        float bv = 0.0
+        float sv = 0.0
+        for j = 0 to 2 * l_len
+            if close[j] >= open[j]
+                bv += vol[j]
+            else
+                sv += vol[j]
+        float tot = bv + sv
+        if tot > 0
+            bp := bv / tot * 100
+            int w = x2 - x1
+            bb := box.new(x1, top, x1 + math.max(1, math.round(w * bp / 100)), mid, border_color = na, bgcolor = color.new(C_UP, 70), text = "Bull " + str.tostring(bp, "#.##") + "%", text_color = C_TXT, text_size = size.tiny, text_halign = text.align_left)
+            sb := box.new(x1, mid, x1 + math.max(1, math.round(w * (100 - bp) / 100)), bot, border_color = na, bgcolor = color.new(C_DN, 70), text = "Bear " + str.tostring(100 - bp, "#.##") + "%", text_color = C_TXT, text_size = size.tiny, text_halign = text.align_left)
+            float dl = bv - sv
+            db := box.new(x2 + 1, top, x2 + 8, bot, border_color = color.new(c, 50), bgcolor = color.new(dl >= 0 ? C_UP : C_DN, 80), text = "Del " + (dl >= 0 ? "+" : "") + str.tostring(dl, format.volume), text_color = C_TXT, text_size = size.tiny)
+    Liq.new(bx, bb, sb, db, ml, x1, top, bot, d, bp)
+
+f_liqTrim(int d) =>
+    // الإبقاء على أقرب المناطق للسعر لكل جهة
+    int n = 0
+    for z in liqs
+        n += z.dir == d ? 1 : 0
+    while n > l_max
+        int   far = -1
+        float fd  = -1.0
+        for i = 0 to liqs.size() - 1
+            Liq z = liqs.get(i)
+            float dd = math.abs(close - (z.top + z.bot) / 2)
+            if z.dir == d and dd > fd
+                fd  := dd
+                far := i
+        f_liqDelete(liqs.get(far))
+        liqs.remove(far)
+        n -= 1
+    true
 
 if m_liq and conf
     float zh = math.max(nz(atr200, nz(atr14)) * l_depth, syminfo.mintick)
     // منطقة جديدة من قمة/قاع محوري، إلا إذا تداخلت مع منطقة قائمة
     if not na(liqPh) and not f_liqOverlap(liqPh, liqPh - zh, 1)
-        box b = box.new(bar_index - l_len, liqPh, bar_index + l_ext, liqPh - zh, border_color = color.new(C_BSL, 60), bgcolor = color.new(C_BSL, 85), text_color = C_BSL, text_size = size.tiny, text_halign = text.align_right)
-        liqs.push(Liq.new(b, liqPh, liqPh - zh, 1))
+        liqs.push(f_liqNew(liqPh, liqPh - zh, 1))
+        f_liqTrim(1)
     if not na(liqPl) and not f_liqOverlap(liqPl + zh, liqPl, -1)
-        box b = box.new(bar_index - l_len, liqPl + zh, bar_index + l_ext, liqPl, border_color = color.new(C_SSL, 60), bgcolor = color.new(C_SSL, 85), text_color = C_SSL, text_size = size.tiny, text_halign = text.align_right)
-        liqs.push(Liq.new(b, liqPl + zh, liqPl, -1))
+        liqs.push(f_liqNew(liqPl + zh, liqPl, -1))
+        f_liqTrim(-1)
     // تحديث: الإغلاق خلف رأس المنطقة يحذفها (سُحبت السيولة)، والذيل وحده لا يلغيها
     if liqs.size() > 0
         for i = liqs.size() - 1 to 0
             Liq z = liqs.get(i)
             bool gone = z.dir == 1 ? close > z.top : close < z.bot
             if gone
-                z.bx.delete()
+                f_liqDelete(z)
                 liqs.remove(i)
             else
-                if high >= z.bot and low <= z.top
-                    z.bv := z.bv + liqBuyV
-                    z.sv := z.sv + liqSellV
                 liqSweepUp := liqSweepUp or (z.dir == 1 and high > z.top)
                 liqSweepDn := liqSweepDn or (z.dir == -1 and low < z.bot)
-                z.bx.set_right(bar_index + l_ext)
-                if hasVol
-                    z.bx.set_text(f_liqText(z))
-    // الإبقاء على أقرب المناطق للسعر فقط
-    while liqs.size() > l_max
-        int   far = 0
-        float fd  = -1.0
-        for i = 0 to liqs.size() - 1
-            Liq z = liqs.get(i)
-            float d = math.abs(close - (z.top + z.bot) / 2)
-            if d > fd
-                fd  := d
-                far := i
-        liqs.get(far).bx.delete()
-        liqs.remove(far)
+                int x2 = bar_index + l_ext
+                z.bx.set_right(x2)
+                z.ml.set_x2(x2)
+                if not na(z.bb)
+                    int w = x2 - z.x1
+                    z.bb.set_right(z.x1 + math.max(1, math.round(w * z.bp / 100)))
+                    z.sb.set_right(z.x1 + math.max(1, math.round(w * (100 - z.bp) / 100)))
+                    z.db.set_left(x2 + 1)
+                    z.db.set_right(x2 + 8)
 
 // ════════════════════════════════════════════════════════════
-// 6. نطاق الافتتاح ORB (صندوق متدرج + 3 مستويات بدوائر)
+// 6. نطاق الافتتاح ORB (خلفية أثناء الجلسة، ثم 3 خطوط وتعبئتان حتى الجلسة التالية)
 // ════════════════════════════════════════════════════════════
 var array<OrbSet> orbs = array.new<OrbSet>()
 var float orbHi     = na
@@ -379,8 +433,7 @@ var bool  orbDnDone = false
 bool orbStart = inOrb and not inOrb[1]
 bool orbEnd   = not inOrb and inOrb[1]
 
-f_orbDot(int x, float y) =>
-    label.new(x, y, "◯", style = label.style_none, textcolor = C_DOT, size = size.small)
+bgcolor(inOrb ? color.new(C_ORB_S, 85) : na, title = "ORB Session")
 
 f_orbDelete(OrbSet o) =>
     o.hi.delete()
@@ -388,58 +441,36 @@ f_orbDelete(OrbSet o) =>
     o.lo.delete()
     o.up.delete()
     o.dn.delete()
-    for d in o.dots
-        d.delete()
     true
-
-f_orbDraw(OrbSet o, int x2, float h, float l, bool forming) =>
-    float m  = (h + l) / 2
-    int   xm = math.round((o.x1 + x2) / 2)
-    o.hi.set_xy1(o.x1, h)
-    o.hi.set_xy2(x2, h)
-    o.mid.set_xy1(o.x1, m)
-    o.mid.set_xy2(x2, m)
-    o.lo.set_xy1(o.x1, l)
-    o.lo.set_xy2(x2, l)
-    o.up.set_lefttop(o.x1, h)
-    o.up.set_rightbottom(forming ? bar_index : o.up.get_right(), m)
-    o.dn.set_lefttop(o.x1, m)
-    o.dn.set_rightbottom(forming ? bar_index : o.dn.get_right(), l)
-    array<float> ys = array.from(h, m, l)
-    for i = 0 to 2
-        float y = ys.get(i)
-        o.dots.get(i * 3).set_xy(o.x1, y)
-        o.dots.get(i * 3 + 1).set_xy(xm, y)
-        o.dots.get(i * 3 + 2).set_xy(x2, y)
-    true
-
-if newDay and not inOrb
-    orbLive := false
 
 if orbStart
     orbHi     := high
     orbLo     := low
     orbReady  := false
-    orbLive   := true
+    orbLive   := false // يوقف امتداد نطاق اليوم السابق
     orbUpDone := false
     orbDnDone := false
-    color lc = color.new(color.gray, 20)
-    array<label> dots = array.new<label>()
-    for i = 1 to 9
-        dots.push(f_orbDot(bar_index, close))
-    OrbSet o = OrbSet.new(bar_index, line.new(bar_index, high, bar_index, high, color = lc), line.new(bar_index, hl2, bar_index, hl2, color = lc), line.new(bar_index, low, bar_index, low, color = lc), box.new(bar_index, high, bar_index, hl2, border_color = na, bgcolor = o_colU), box.new(bar_index, hl2, bar_index, low, border_color = na, bgcolor = o_colD), dots)
-    orbs.push(o)
-    while orbs.size() > o_days
-        f_orbDelete(orbs.shift())
 else if inOrb
     orbHi := math.max(orbHi, high)
     orbLo := math.min(orbLo, low)
 
-if orbEnd
+if orbEnd and not na(orbHi)
     orbReady := true
+    orbLive  := true
+    float m  = (orbHi + orbLo) / 2
+    color lc = color.new(color.gray, 20)
+    orbs.push(OrbSet.new(line.new(bar_index, orbHi, bar_index, orbHi, color = lc), line.new(bar_index, m, bar_index, m, color = lc, style = line.style_dashed), line.new(bar_index, orbLo, bar_index, orbLo, color = lc), box.new(bar_index, orbHi, bar_index, m, border_color = na, bgcolor = o_colU), box.new(bar_index, m, bar_index, orbLo, border_color = na, bgcolor = o_colD)))
+    while orbs.size() > o_days
+        f_orbDelete(orbs.shift())
 
-if orbLive and orbs.size() > 0
-    f_orbDraw(orbs.last(), bar_index + 20, orbHi, orbLo, inOrb)
+// امتداد النطاق حتى بداية الجلسة التالية
+if orbLive and not inOrb and orbs.size() > 0
+    OrbSet o = orbs.last()
+    o.hi.set_x2(bar_index)
+    o.mid.set_x2(bar_index)
+    o.lo.set_x2(bar_index)
+    o.up.set_right(bar_index)
+    o.dn.set_right(bar_index)
 
 bool orbUp = orbReady and orbLive and not orbUpDone and barOk and close > orbHi
 bool orbDn = orbReady and orbLive and not orbDnDone and barOk and close < orbLo
@@ -448,72 +479,88 @@ if orbUp
 if orbDn
     orbDnDone := true
 if o_sig and orbUp
-    label.new(bar_index, na, "", yloc = yloc.belowbar, style = label.style_label_up, color = C_UP, size = size.tiny)
+    label.new(bar_index, na, "", yloc = yloc.belowbar, style = label.style_label_up, color = C_ORB_U, size = size.tiny)
 if o_sig and orbDn
-    label.new(bar_index, na, "", yloc = yloc.abovebar, style = label.style_label_down, color = C_DN, size = size.tiny)
+    label.new(bar_index, na, "", yloc = yloc.abovebar, style = label.style_label_down, color = C_ORB_D, size = size.tiny)
 
 // ════════════════════════════════════════════════════════════
-// 7. خطوط الاتجاه (TrendLines + Break)
+// 7. خطوط الاتجاه (TrendLines)
 // ════════════════════════════════════════════════════════════
-var array<TLine> tlRes  = array.new<TLine>()
-var array<TLine> tlSup  = array.new<TLine>()
+// القمة الجديدة تُربط بأقرب قمة سابقة أعلى منها (خط هابط)، والقاع الجديد بأقرب قاع سابق أدنى منه (خط صاعد)
+var array<TLine> tls    = array.new<TLine>()
 var array<line>  tlHist = array.new<line>()
-var float lastPhPx = na
-var int   lastPhX  = na
-var float lastPlPx = na
-var int   lastPlX  = na
+var array<float> phPx   = array.new<float>()
+var array<int>   phX    = array.new<int>()
+var array<float> plPx   = array.new<float>()
+var array<int>   plX    = array.new<int>()
 bool tlBreakUp = false
 bool tlBreakDn = false
 
 f_tlValue(TLine t) =>
     t.y1 + t.slope * (bar_index - t.x1)
 
-f_tlUpdate(array<TLine> arr) =>
-    bool broke = false
-    if arr.size() > 0
-        for i = arr.size() - 1 to 0
-            TLine t = arr.get(i)
-            float v = f_tlValue(t)
-            bool br = t.dir == -1 ? close > v : close < v
-            if br
-                broke := true
-                t.ln.set_xy2(bar_index, v)
-                t.ln.set_style(line.style_dotted)
-                label.new(bar_index, na, t.dir == -1 ? "Break ▲" : "Break ▼", yloc = t.dir == -1 ? yloc.belowbar : yloc.abovebar, style = t.dir == -1 ? label.style_label_up : label.style_label_down, color = color.new(t_col, 20), textcolor = C_TXT, size = size.tiny)
-                if t_hist
-                    tlHist.push(t.ln)
-                    while tlHist.size() > 20
-                        tlHist.shift().delete()
-                else
-                    t.ln.delete()
-                arr.remove(i)
-            else
-                t.ln.set_xy2(bar_index, v)
-    broke
+f_tlRetire(TLine t) =>
+    if t_hist
+        tlHist.push(t.ln)
+        while tlHist.size() > 60
+            tlHist.shift().delete()
+    else
+        t.ln.delete()
+    true
+
+// يبحث للخلف عن أقرب محور أعلى (d = -1) أو أدنى (d = 1) من السعر p
+f_tlAnchor(array<float> px, float p, int d) =>
+    int idx = -1
+    if px.size() > 0
+        for i = px.size() - 1 to 0
+            float q = px.get(i)
+            if (d == -1 and q > p) or (d == 1 and q < p)
+                idx := i
+                break
+    idx
+
+f_tlAdd(float x1p, int x1, float p, int x2, int d) =>
+    float sl = (p - x1p) / (x2 - x1)
+    line ln = line.new(x1, x1p, bar_index, p + sl * (bar_index - x2), color = t_col, width = 2)
+    tls.push(TLine.new(ln, x1, x1p, sl, d))
+    while tls.size() > t_last
+        f_tlRetire(tls.shift())
+    true
 
 if m_tl and conf
     if not na(tlPh)
         int x2 = bar_index - t_len
-        if not na(lastPhPx) and tlPh < lastPhPx and x2 > lastPhX
-            float sl = (tlPh - lastPhPx) / (x2 - lastPhX)
-            line ln = line.new(lastPhX, lastPhPx, bar_index, tlPh + sl * t_len, color = t_col, width = 2)
-            tlRes.push(TLine.new(ln, lastPhX, lastPhPx, sl, -1))
-            while tlRes.size() > t_last
-                tlRes.shift().ln.delete()
-        lastPhPx := tlPh
-        lastPhX  := x2
+        int a  = f_tlAnchor(phPx, tlPh, -1)
+        if a >= 0 and x2 > phX.get(a)
+            f_tlAdd(phPx.get(a), phX.get(a), tlPh, x2, -1)
+        phPx.push(tlPh)
+        phX.push(x2)
+        if phPx.size() > 30
+            phPx.shift()
+            phX.shift()
     if not na(tlPl)
         int x2 = bar_index - t_len
-        if not na(lastPlPx) and tlPl > lastPlPx and x2 > lastPlX
-            float sl = (tlPl - lastPlPx) / (x2 - lastPlX)
-            line ln = line.new(lastPlX, lastPlPx, bar_index, tlPl + sl * t_len, color = t_col, width = 2)
-            tlSup.push(TLine.new(ln, lastPlX, lastPlPx, sl, 1))
-            while tlSup.size() > t_last
-                tlSup.shift().ln.delete()
-        lastPlPx := tlPl
-        lastPlX  := x2
-    tlBreakUp := f_tlUpdate(tlRes)
-    tlBreakDn := f_tlUpdate(tlSup)
+        int a  = f_tlAnchor(plPx, tlPl, 1)
+        if a >= 0 and x2 > plX.get(a)
+            f_tlAdd(plPx.get(a), plX.get(a), tlPl, x2, 1)
+        plPx.push(tlPl)
+        plX.push(x2)
+        if plPx.size() > 30
+            plPx.shift()
+            plX.shift()
+    // الكسر بالإغلاق يُنهي الخط بدون أي علامة
+    if tls.size() > 0
+        for i = tls.size() - 1 to 0
+            TLine t = tls.get(i)
+            float v = f_tlValue(t)
+            if t.dir == -1 ? close > v : close < v
+                tlBreakUp := tlBreakUp or t.dir == -1
+                tlBreakDn := tlBreakDn or t.dir == 1
+                t.ln.set_xy2(bar_index, v)
+                f_tlRetire(t)
+                tls.remove(i)
+            else
+                t.ln.set_xy2(bar_index, v)
 
 // ════════════════════════════════════════════════════════════
 // 8. كتل الأوامر (من القمم والقيعان الكبرى + Breaker)
@@ -538,9 +585,10 @@ f_obTrim(int d) =>
                 break
     true
 
-// النص = قوة الحجم مقارنة بالمتوسط + حجم شمعة الكتلة نفسها
+// النص = تصنيف حجم شمعة الكتلة مقارنة بالمتوسط + الحجم نفسه
 f_obText(float v, float avg) =>
-    string lvl = avg > 0 ? (v >= avg * 2 ? "High" : v >= avg * 1.2 ? "Medium" : "Low") : "Vol"
+    float r = avg > 0 ? v / avg : 1.0
+    string lvl = r >= 4 ? "Very High" : r >= 2.5 ? "High" : r >= 1 ? "Medium" : r >= 0.5 ? "Low" : "Very Low"
     hasVol ? lvl + ": " + str.tostring(v, format.volume) : "OB"
 
 if m_ob and conf
@@ -549,39 +597,39 @@ if m_ob and conf
     if not na(obPh)
         float top = high[ob_len]
         float bot = math.min(math.max(open[ob_len], close[ob_len]), top - minH)
-        box b = box.new(bar_index - ob_len, top, bar_index + 10, bot, border_color = color.new(C_OB_DN, 40), bgcolor = color.new(C_OB_DN, 80), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_OB_DN, text_size = size.tiny, text_halign = text.align_right)
-        obs.push(OB.new(b, top, bot, -1))
+        box b = box.new(bar_index - ob_len, top, bar_index, bot, border_color = color.new(C_OB_DN, 40), bgcolor = color.new(C_OB_DN, 80), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_OB_DN, text_size = size.tiny, text_halign = text.align_right)
+        obs.push(OB.new(b, bar_index - ob_len, top, bot, -1))
         f_obTrim(-1)
     // قاع كبير: المنطقة من رأس الذيل إلى أسفل الجسم
     if not na(obPl)
         float bot = low[ob_len]
         float top = math.max(math.min(open[ob_len], close[ob_len]), bot + minH)
-        box b = box.new(bar_index - ob_len, top, bar_index + 10, bot, border_color = color.new(C_OB_UP, 40), bgcolor = color.new(C_OB_UP, 80), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_OB_UP, text_size = size.tiny, text_halign = text.align_right)
-        obs.push(OB.new(b, top, bot, 1))
+        box b = box.new(bar_index - ob_len, top, bar_index, bot, border_color = color.new(C_OB_UP, 40), bgcolor = color.new(C_OB_UP, 80), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_OB_UP, text_size = size.tiny, text_halign = text.align_right)
+        obs.push(OB.new(b, bar_index - ob_len, top, bot, 1))
         f_obTrim(1)
-    // تحديث: الكتلة تمتد يميناً حتى يكسرها السعر بالإغلاق
+    // تحديث: الكتلة تمتد حتى الشمعة الحالية حتى يكسرها السعر بالإغلاق أو تتجاوز العمر الأقصى
     if obs.size() > 0
         for i = obs.size() - 1 to 0
             OB o = obs.get(i)
-            bool kill = false
-            if not o.breaker
-                if o.dir == 1 ? close < o.bot : close > o.top
-                    if ob_breaker
-                        o.breaker := true
-                        o.bx.set_bgcolor(color.new(C_BRK, 85))
-                        o.bx.set_border_color(color.new(C_BRK, 30))
-                        o.bx.set_border_style(line.style_dashed)
-                        o.bx.set_text_color(C_BRK)
-                        o.bx.set_text(o.dir == 1 ? "Breaker ▼" : "Breaker ▲")
-                    else
-                        kill := true
-            else
-                kill := o.dir == 1 ? close > o.top : close < o.bot
+            bool kill = bar_index - o.x1 > ob_age
+            if not kill
+                if not o.breaker
+                    if o.dir == 1 ? close < o.bot : close > o.top
+                        if ob_breaker
+                            o.breaker := true
+                            o.bx.set_bgcolor(color.new(C_BRK, 75))
+                            o.bx.set_border_color(color.new(C_BRK, 30))
+                            o.bx.set_text_color(C_TXT)
+                            o.bx.set_text("Breaker Block")
+                        else
+                            kill := true
+                else
+                    kill := o.dir == 1 ? close > o.top : close < o.bot
             if kill
                 o.bx.delete()
                 obs.remove(i)
             else
-                o.bx.set_right(bar_index + 10)
+                o.bx.set_right(bar_index)
 
 // ════════════════════════════════════════════════════════════
 // 9. RMI Trend
@@ -610,7 +658,7 @@ plot(m_vol and v_vwap and hasVol ? vwapV : na, "VWAP", color = color.new(#FFB300
 // 11. Volume Screener (جدول عدة رموز)
 // ════════════════════════════════════════════════════════════
 f_scrData() =>
-    [stv, std] = ta.supertrend(s_sens, s_atrLen)
+    [stv, std] = ta.supertrend(s_sens * SIG_MULT, s_atrLen)
     float v = nz(volume)
     float a = ta.sma(v, v_len)
     [close, ta.change(close) / close[1] * 100, a > 0 ? v / a : na, std < 0 ? 1 : -1, ta.rsi(close, v_len)]
