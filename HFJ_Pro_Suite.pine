@@ -1,6 +1,6 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// HFJ Pro Suite v3.2 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
+// HFJ Pro Suite v3.3 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
 // الوحدات: إشارات الاتجاه (▲ / ▲+) + علامات TP ✓ + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
 //@version=6
 indicator("HFJ Pro Suite", shorttitle = "HFJ Pro", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
@@ -34,9 +34,26 @@ const color C_OB_UP = #00BFA5
 const color C_OB_DN = #FF5252
 const color C_BRK   = #787B86
 
-// محرك الإشارات: المعامل الفعلي = 1.6 × (1 + Sensitivity) — أقرب تطابق مع الأصلي على 1h عند 1.0 / 1.7 / 3.0
+// معامل SuperTrend (المحرك البديل): 1.6 × (1 + Sensitivity)
 f_sigFactor(float sens) =>
     1.6 * (1 + sens)
+
+// معامل Chandelier: 1.75 × (15 × Sensitivity + 4) ÷ 11 — يساوي 4.7 عند 1.7 (أفضل تطابق مع الأصلي)
+f_ceMult(float sens) =>
+    1.75 * (15 * sens + 4) / 11
+
+// Chandelier Exit على الإغلاق: يعيد [وقف الشراء، وقف البيع، الاتجاه]
+f_chandelier(float mult, int atrLen, int len) =>
+    float a   = mult * ta.atr(atrLen)
+    float ls  = ta.highest(close, len) - a
+    float lsp = nz(ls[1], ls)
+    ls := close[1] > lsp ? math.max(ls, lsp) : ls
+    float ss  = ta.lowest(close, len) + a
+    float ssp = nz(ss[1], ss)
+    ss := close[1] < ssp ? math.min(ss, ssp) : ss
+    var int d = 1
+    d := close > ssp ? 1 : close < lsp ? -1 : d
+    [ls, ss, d]
 
 type Liq
     box   bx           // المنطقة
@@ -95,10 +112,13 @@ bool  s_candles = input.bool(true, "Trend Candles", group = G_SIG)
 bool  s_trail   = input.bool(true, "Trailing TP", inline = "s2", group = G_SIG)
 float s_trailR  = input.float(2.1, "", minval = 0.5, step = 0.1, inline = "s2", group = G_SIG, tooltip = "مسافة خط الوقف المتحرك بمضاعفات ATR. ينتهي الخط عند إغلاق السعر خلفه")
 bool  s_levels  = input.bool(false, "TP Lines", group = G_SIG, tooltip = "رسم خطوط الدخول والوقف والهدفين عند كل إشارة")
-float s_tpAtr   = input.float(3.0, "TP1 distance (× ATR 30)", minval = 0.5, step = 0.1, group = G_SIG, tooltip = "الأهداف تُثبَّت لحظة الإشارة: TP1 = هذه المسافة، TP2 = ضعفها. لا تتأثر بالحساسية ولا بالوقف المتحرك")
+string s_tpMode = input.string("Stop distance (R)", "TP mode", options = ["Stop distance (R)", "ATR 30"], group = G_SIG, tooltip = "R = المسافة من الدخول إلى وقف المحرك لحظة الإشارة. TP1 = R × المعامل، TP2 = ضعفه")
+float s_tpAtr   = input.float(1.0, "TP1 multiple", minval = 0.1, step = 0.1, group = G_SIG, tooltip = "في وضع R: TP1 = R × هذا الرقم (الافتراضي 1). في وضع ATR 30: جرّب 3")
 int   s_trendLen = input.int(100, "Trend MA (EMA)", minval = 10, group = G_SIG, tooltip = "علامة + تظهر عندما تكون الإشارة في نفس جهة هذا المتوسط: شراء فوقه، بيع تحته")
 bool  s_trailShort = input.bool(false, "Trailing for shorts", group = G_SIG, tooltip = "افتراضياً خط الوقف المتحرك لصفقات الشراء فقط مثل المؤشر الأصلي")
-int   s_atrLen  = input.int(14, "ATR Length", minval = 1, group = G_SIG)
+string s_engine = input.string("Chandelier", "Signal engine", options = ["Chandelier", "SuperTrend"], group = G_SIG, tooltip = "Chandelier Exit هو الأقرب لإشارات الأصلي (65% على نفس الشمعة و87% ضمن 3 شموع على 15 دقيقة)")
+int   s_atrLen  = input.int(20, "ATR Length", minval = 1, inline = "s3", group = G_SIG)
+int   s_ceLen   = input.int(22, "Lookback", minval = 2, inline = "s3", group = G_SIG, tooltip = "فترة أعلى/أدنى إغلاق في Chandelier")
 bool  s_confirm = input.bool(true, "Confirm on bar close", group = G_SIG, tooltip = "يمنع ظهور واختفاء الإشارات أثناء تكوّن الشمعة")
 
 // --- السيولة ---
@@ -116,9 +136,9 @@ bool   o_sig  = input.bool(true, "Signals", group = G_ORB)
 int    o_days = input.int(30, "Days to show", minval = 1, maxval = 150, group = G_ORB)
 
 // --- خطوط الاتجاه ---
-string t_sens = input.string("Medium", "", options = ["Small", "Medium", "Large"], inline = "t1", group = G_TL)
+string t_sens = input.string("Medium", "", options = ["Small", "Medium", "Big", "Macro"], inline = "t1", group = G_TL)
 color  t_col  = input.color(color.gray, "", inline = "t1", group = G_TL)
-int    t_last = input.int(2, "Last", minval = 1, maxval = 10, inline = "t1", group = G_TL)
+int    t_last = input.int(2, "Last", options = [1, 2], inline = "t1", group = G_TL)
 bool   t_hist = input.bool(false, "History", group = G_TL, tooltip = "إبقاء خطوط الاتجاه المكسورة على الشارت")
 
 // --- كتل الأوامر ---
@@ -183,7 +203,10 @@ bool  barOk   = not s_confirm or barstate.isconfirmed
 bool  conf    = barstate.isconfirmed
 
 [stLine, stDir] = ta.supertrend(f_sigFactor(s_sens), s_atrLen)
-int trend = stDir < 0 ? 1 : -1
+[ceLong, ceShort, ceDir] = f_chandelier(f_ceMult(s_sens), s_atrLen, s_ceLen)
+bool  useCE  = s_engine == "Chandelier"
+int   trend  = useCE ? ceDir : (stDir < 0 ? 1 : -1)
+float engStop = useCE ? (trend == 1 ? ceLong : ceShort) : stLine
 
 // الحجم (بعض أزواج الفوركس بدون حجم — الوحدات تتعامل مع ذلك تلقائياً)
 float vol    = nz(volume)
@@ -199,9 +222,9 @@ float rmi   = hasVol and not na(mfiR) ? (rsiR + mfiR) / 2 : rsiR
 float rmiMa = ta.ema(close, r_len)
 
 // محاور الوحدات
-// المحور: يسار طويل ويمين قصير (Medium/Large = 20/10، Small = 10/5)
-int   t_left  = t_sens == "Small" ? 10 : 20
-int   t_len   = t_sens == "Small" ? 5 : 10
+// المحور: يسار طويل ويمين قصير (Small = 10/5، Medium/Big = 20/10، Macro = 40/20)
+int   t_left  = t_sens == "Small" ? 10 : t_sens == "Macro" ? 40 : 20
+int   t_len   = t_sens == "Small" ? 5 : t_sens == "Macro" ? 20 : 10
 int   ob_len = ob_preset == "Macro" ? 100 : ob_preset == "Big" ? 50 : ob_preset == "Medium" ? 25 : 10
 float liqPh  = ta.pivothigh(high, l_len, l_len)
 float liqPl  = ta.pivotlow(low, l_len, l_len)
@@ -274,8 +297,10 @@ if newSig
         tpLabels.pop().delete()
     tDir      := buySig ? 1 : -1
     tEntry    := close
-    tSL       := stLine
-    tRisk     := math.max(nz(atr30, nz(atr14)) * s_tpAtr, syminfo.mintick) // مسافة TP1 ثابتة من لحظة الإشارة
+    tSL       := engStop
+    float rDist = math.abs(close - engStop)
+    float tpBase = s_tpMode == "ATR 30" or na(rDist) or rDist <= 0 ? nz(atr30, nz(atr14)) : rDist
+    tRisk     := math.max(tpBase * s_tpAtr, syminfo.mintick) // مسافة TP1 ثابتة من لحظة الإشارة
     tpHit     := 0
     trail     := na
     trailLive := s_trail and (tDir == 1 or s_trailShort)
@@ -653,9 +678,10 @@ plot(m_vol and v_vwap and hasVol ? vwapV : na, "VWAP", color = color.new(#FFB300
 // ════════════════════════════════════════════════════════════
 f_scrData() =>
     [stv, std] = ta.supertrend(f_sigFactor(s_sens), s_atrLen)
+    [cl, cs, cd] = f_chandelier(f_ceMult(s_sens), s_atrLen, s_ceLen)
     float v = nz(volume)
     float a = ta.sma(v, v_len)
-    [close, ta.change(close) / close[1] * 100, a > 0 ? v / a : na, std < 0 ? 1 : -1, ta.rsi(close, v_len)]
+    [close, ta.change(close) / close[1] * 100, a > 0 ? v / a : na, s_engine == "Chandelier" ? cd : (std < 0 ? 1 : -1), ta.rsi(close, v_len)]
 
 // عند تعطيل الوحدة أو الرمز يُطلب الرمز الحالي فقط (لتسريع التحميل)
 f_sym(bool on, string s) =>
