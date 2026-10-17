@@ -1,6 +1,6 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// HFJ Pro Suite v3.4 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
+// HFJ Pro Suite v3.5 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
 // الوحدات: إشارات الاتجاه (▲ / ▲+) + علامات TP ✓ + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
 //@version=6
 indicator("HFJ Pro Suite", shorttitle = "HFJ Pro", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
@@ -84,10 +84,13 @@ type TLine
 type OB
     box   bx
     array<box> grad        // تدرج من الغامق (رأس الكتلة) إلى الفاتح
-    int   x1
+    int   x1           // شمعة الكتلة
+    int   xc           // شمعة تأكيد الكتلة (يبدأ خصم الحجم بعدها)
     float top
     float bot
     int   dir          // 1 = من قاع (طلب)، -1 = من قمة (عرض)
+    float rem          // الحجم المتبقي في الكتلة
+    float avg          // متوسط الحجم (20) عند شمعة الكتلة
     bool  breaker = false
 
 type OrbSet
@@ -146,10 +149,10 @@ int    t_last = input.int(2, "Last", options = [1, 2], inline = "t1", group = G_
 bool   t_hist = input.bool(false, "History", group = G_TL, tooltip = "إبقاء خطوط الاتجاه المكسورة على الشارت")
 
 // --- كتل الأوامر ---
-string ob_preset  = input.string("Macro", "Preset", options = ["Macro", "Big", "Medium", "Small"], inline = "b1", group = G_OB, tooltip = "حجم القمة/القاع المطلوب: Macro = 100 شمعة على كل جانب، Big = 50، Medium = 25، Small = 10")
+string ob_preset  = input.string("Macro", "Preset", options = ["Macro", "Big", "Medium", "Small"], inline = "b1", group = G_OB, tooltip = "قوة القمة/القاع (يسار / تأكيد يمين): Macro = 100/60، Big = 24/30، Medium = 20/4، Small = 10/3")
 bool   ob_breaker = input.bool(false, "Breaker Block", inline = "b1", group = G_OB)
-int    ob_max     = input.int(3, "Max blocks per side", minval = 1, maxval = 20, group = G_OB)
-int    ob_age     = input.int(300, "Max age (bars)", minval = 20, maxval = 1000, group = G_OB, tooltip = "تُحذف الكتل الأقدم من هذا العدد من الشموع")
+int    ob_max     = input.int(5, "Max blocks per side", minval = 1, maxval = 20, group = G_OB)
+int    ob_age     = input.int(1000, "Max age (bars)", minval = 20, maxval = 5000, group = G_OB, tooltip = "الكتلة تُحذف عند نفاد حجمها، أو إذا تجاوزت هذا العمر")
 
 // --- RMI ---
 int   r_len   = input.int(14, "RMI Length", minval = 2, group = G_RMI)
@@ -240,13 +243,14 @@ float rmiMa = ta.ema(close, r_len)
 // المحور: يسار طويل ويمين قصير (Small = 10/5، Medium/Big = 20/10، Macro = 40/20)
 int   t_left  = t_sens == "Small" ? 10 : t_sens == "Macro" ? 40 : 20
 int   t_len   = t_sens == "Small" ? 5 : t_sens == "Macro" ? 20 : 10
-int   ob_len = ob_preset == "Macro" ? 100 : ob_preset == "Big" ? 50 : ob_preset == "Medium" ? 25 : 10
+int   ob_left  = ob_preset == "Macro" ? 100 : ob_preset == "Big" ? 24 : ob_preset == "Medium" ? 20 : 10
+int   ob_len   = ob_preset == "Macro" ? 60 : ob_preset == "Big" ? 30 : ob_preset == "Medium" ? 4 : 3 // التأكيد على اليمين
 float liqPh  = f_pivHigh(l_len, l_len)
 float liqPl  = f_pivLow(l_len, l_len)
 float tlPh   = f_pivHigh(t_left, t_len)
 float tlPl   = f_pivLow(t_left, t_len)
-float obPh   = f_pivHigh(ob_len, ob_len)
-float obPl   = f_pivLow(ob_len, ob_len)
+float obPh   = f_pivHigh(ob_left, ob_len)
+float obPl   = f_pivLow(ob_left, ob_len)
 
 // ORB
 string o_tz   = "UTC" + (o_utc >= 0 ? "+" : "-") + str.tostring(math.abs(o_utc))
@@ -610,7 +614,7 @@ if m_tl and conf
 // 8. كتل الأوامر (من القمم والقيعان الكبرى + Breaker)
 // ════════════════════════════════════════════════════════════
 var array<OB> obs = array.new<OB>()
-float obVolAvg = ta.sma(vol, 50)
+float obVolAvg = ta.sma(vol, 20)
 
 // تدرج داخل الكتلة: 4 شرائح من الغامق (رأس الذيل) إلى الفاتح (جهة الجسم)
 f_obGrad(int x1, float top, float bot, color c, bool darkTop) =>
@@ -644,7 +648,7 @@ f_obTrim(int d) =>
                 break
     true
 
-// النص = تصنيف حجم شمعة الكتلة مقارنة بالمتوسط + الحجم نفسه
+// النص = تصنيف الحجم المتبقي مقارنة بمتوسط الحجم عند شمعة الكتلة + الحجم المتبقي
 f_obText(float v, float avg) =>
     float r = avg > 0 ? v / avg : 1.0
     string lvl = r >= 4 ? "Very High" : r >= 2.5 ? "High" : r >= 1 ? "Medium" : r >= 0.5 ? "Low" : "Very Low"
@@ -658,7 +662,7 @@ if m_ob and conf
         float bot = math.min(math.max(open[ob_len], close[ob_len]), top - minH)
         array<box> g = f_obGrad(bar_index - ob_len, top, bot, C_BEAR, true)
         box b = box.new(bar_index - ob_len, top, bar_index, bot, border_color = color.new(C_BEAR, 30), bgcolor = color.new(C_BEAR, 100), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_TXT, text_size = size.tiny, text_halign = text.align_right)
-        obs.push(OB.new(b, g, bar_index - ob_len, top, bot, -1))
+        obs.push(OB.new(b, g, bar_index - ob_len, bar_index, top, bot, -1, vol[ob_len], obVolAvg[ob_len]))
         f_obTrim(-1)
     // قاع كبير: المنطقة من رأس الذيل إلى أسفل الجسم
     if not na(obPl)
@@ -666,26 +670,32 @@ if m_ob and conf
         float top = math.max(math.min(open[ob_len], close[ob_len]), bot + minH)
         array<box> g = f_obGrad(bar_index - ob_len, top, bot, C_BULL, false)
         box b = box.new(bar_index - ob_len, top, bar_index, bot, border_color = color.new(C_BULL, 30), bgcolor = color.new(C_BULL, 100), text = f_obText(vol[ob_len], obVolAvg[ob_len]), text_color = C_TXT, text_size = size.tiny, text_halign = text.align_right)
-        obs.push(OB.new(b, g, bar_index - ob_len, top, bot, 1))
+        obs.push(OB.new(b, g, bar_index - ob_len, bar_index, top, bot, 1, vol[ob_len], obVolAvg[ob_len]))
         f_obTrim(1)
-    // تحديث: الكتلة تمتد حتى الشمعة الحالية حتى يكسرها السعر بالإغلاق أو تتجاوز العمر الأقصى
+    // تحديث: كل شمعة تدخل الكتلة تستهلك من حجمها بنسبة ما دخل من مداها، والكتلة تُحذف عند نفاد الحجم
     if obs.size() > 0
         for i = obs.size() - 1 to 0
             OB o = obs.get(i)
             bool kill = bar_index - o.x1 > ob_age
-            if not kill
-                if not o.breaker
-                    if o.dir == 1 ? close < o.bot : close > o.top
-                        if ob_breaker
-                            o.breaker := true
-                            o.bx.set_border_color(color.new(C_BRK, 30))
-                            o.bx.set_text("Breaker Block")
-                            for k = 0 to o.grad.size() - 1
-                                o.grad.get(k).set_bgcolor(color.new(C_BRK, 45 + k * 13))
-                        else
-                            kill := true
+            if not kill and bar_index > o.xc
+                float ov = math.min(high, o.top) - math.max(low, o.bot)
+                if ov > 0
+                    float rg = high - low
+                    o.rem := o.rem - vol * (rg > 0 ? ov / rg : 1.0)
+                bool brokeOut = o.dir == 1 ? close < o.bot : close > o.top
+                if hasVol
+                    kill := o.rem <= 0
                 else
-                    kill := o.dir == 1 ? close > o.top : close < o.bot
+                    kill := brokeOut and not ob_breaker // بدون بيانات حجم: الحذف بالإغلاق
+                // Breaker: الإغلاق خلف الكتلة يحولها رمادية بدل حذفها
+                if not kill and ob_breaker and not o.breaker and brokeOut
+                    o.breaker := true
+                    o.bx.set_border_color(color.new(C_BRK, 30))
+                    o.bx.set_text("Breaker Block")
+                    for k = 0 to o.grad.size() - 1
+                        o.grad.get(k).set_bgcolor(color.new(C_BRK, 45 + k * 13))
+                if not kill and not o.breaker
+                    o.bx.set_text(f_obText(math.max(o.rem, 0), o.avg))
             if kill
                 f_obDelete(o)
                 obs.remove(i)
