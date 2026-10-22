@@ -1,14 +1,16 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// HFJ Pro Suite v3.5 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
-// الوحدات: إشارات الاتجاه (▲ / ▲+) + علامات TP ✓ + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
+// HFJ Pro Suite v4.0 — مؤشر متعدد الوحدات يعمل على جميع الأصول (عملات، كريبتو، ذهب، أسهم، مؤشرات)
+// الوحدات: إعدادات الأصل (ذهب / كريبتو / فوركس) | إشارات الاتجاه (▲ / ▲+) مع تقييم التوافق ⭐ + علامات TP + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
 //@version=6
 indicator("HFJ Pro Suite", shorttitle = "HFJ Pro", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000)
 
 // ════════════════════════════════════════════════════════════
 // 0. الثوابت والأنواع
 // ════════════════════════════════════════════════════════════
+const string G_PRE  = "ASSET PRESET"
 const string G_MOD  = "MODULES"
+const string G_CF   = "CONFLUENCE FILTER"
 const string G_SIG  = "TREND SIGNAL SETTINGS"
 const string G_LIQ  = "LIQUIDITY SETTINGS"
 const string G_ORB  = "ORB SETTINGS"
@@ -102,6 +104,10 @@ type OrbSet
 // ════════════════════════════════════════════════════════════
 // 1. المدخلات
 // ════════════════════════════════════════════════════════════
+// --- إعدادات الأصل ---
+string p_asset = input.string("Auto", "Asset", options = ["Auto", "Gold (XAUUSD)", "Crypto", "Forex (EURUSD / GBPUSD)", "Custom"], group = G_PRE, tooltip = "يضبط الحساسية والأهداف والوقف المتحرك وجلسة ORB وفلتر الجلسات حسب الأصل. Auto يتعرف على الرمز تلقائياً. Custom = الإعدادات اليدوية بالأسفل (Sensitivity و TP1 multiple و Trailing TP وجلسة ORB)")
+bool   p_sessF = input.bool(true, "Active sessions only", group = G_PRE, tooltip = "ذهب: 03:00-16:00 بتوقيت نيويورك. فوركس: 07:00-17:00 بتوقيت لندن (لندن + نيويورك). كريبتو و Custom: بدون فلتر")
+
 // --- الوحدات ---
 bool m_sig  = input.bool(true,  "Trend Signals",   group = G_MOD)
 bool m_tl   = input.bool(false, "TrendLines",      inline = "m1", group = G_MOD)
@@ -120,7 +126,8 @@ bool  s_candles = input.bool(true, "Trend Candles", group = G_SIG)
 bool  s_trail   = input.bool(true, "Trailing TP", inline = "s2", group = G_SIG)
 float s_trailR  = input.float(2.1, "", minval = 0.5, step = 0.1, inline = "s2", group = G_SIG, tooltip = "مسافة خط الوقف المتحرك بمضاعفات ATR. ينتهي الخط عند إغلاق السعر خلفه")
 bool  s_levels  = input.bool(false, "TP Lines", group = G_SIG, tooltip = "رسم خطوط الدخول والوقف والهدفين عند كل إشارة")
-string s_tpMode = input.string("ATR 50", "TP mode", options = ["ATR 50", "Stop distance (R)"], group = G_SIG, tooltip = "ATR 50: TP1 = المعامل × ATR(50) (الأقرب للأصلي). R: المسافة من الدخول إلى وقف المحرك")
+string s_tpMode = input.string("ATR 50", "TP mode", options = ["ATR 50", "Stop distance (R)", "Risk:Reward"], group = G_SIG, tooltip = "ATR 50: TP1 = المعامل × ATR(50) (الأقرب للأصلي). R: المسافة من الدخول إلى وقف المحرك. Risk:Reward: وقف خلف آخر قاع/قمة، TP1 = 1R و TP2 = R:R")
+float s_rr      = input.float(2.0, "R:R target", minval = 1.0, step = 0.5, group = G_SIG, tooltip = "وضع Risk:Reward فقط: الوقف خلف أدنى قاع (أو أعلى قمة) لآخر 5 شموع + 0.3 ATR، بين 0.7 و 3 ATR. TP2 = هذا الرقم × مسافة الوقف")
 float s_tpAtr   = input.float(3.5, "TP1 multiple", minval = 0.1, step = 0.1, inline = "tp", group = G_SIG)
 float s_tp2     = input.float(2.7, "TP2 = TP1 ×", minval = 1.0, step = 0.1, inline = "tp", group = G_SIG)
 int   s_trendLen = input.int(100, "Trend MA (EMA)", minval = 10, group = G_SIG, tooltip = "علامة + تظهر عندما تكون الإشارة في نفس جهة هذا المتوسط: شراء فوقه، بيع تحته")
@@ -130,6 +137,13 @@ int   s_atrLen  = input.int(22, "ATR Length", minval = 1, inline = "s3", group =
 int   s_ceLen   = input.int(22, "Lookback", minval = 2, inline = "s3", group = G_SIG, tooltip = "فترة أعلى/أدنى إغلاق في Chandelier")
 bool  s_confirm = input.bool(true, "Confirm on bar close", group = G_SIG, tooltip = "يمنع ظهور واختفاء الإشارات أثناء تكوّن الشمعة")
 
+// --- فلتر التوافق ---
+int    q_min  = input.int(3, "Min stars", minval = 0, maxval = 6, group = G_CF, tooltip = "كل إشارة تُقيَّم من 6: الاتجاه EMA، الفريم الأكبر، منطقة (سيولة/أوردر بلوك)، الزخم RMI، الدلتا، الهيكل (ADX / ORB / خط الترند). الإشارة الأقل من هذا الرقم تُرفض. 0 = كل الإشارات")
+bool   q_weak = input.bool(true, "Show rejected signals (grey)", group = G_CF, tooltip = "عرض الإشارات المرفوضة بلون رمادي صغير لترى ماذا فلتر المؤشر")
+string q_htf  = input.timeframe("", "Higher timeframe", group = G_CF, tooltip = "فارغ = تلقائي: 1-3د → 15د، 5-15د → 1س، 30د-1س → 4س، 4س → يومي، يومي فأعلى → أسبوعي")
+int    q_zone = input.int(10, "Zone memory (bars)", minval = 1, maxval = 50, group = G_CF, tooltip = "تُحسب نقطة المنطقة إذا لمس السعر أوردر بلوك / منطقة سيولة أو حصل Sweep خلال هذا العدد من الشموع")
+float  q_adx  = input.float(20, "ADX min", minval = 5, maxval = 50, group = G_CF, tooltip = "نقطة الهيكل: ADX فوق هذا الرقم مع DI في اتجاه الإشارة، أو السعر خارج ORB في اتجاهها، أو كسر خط ترند حديث")
+
 // --- السيولة ---
 int   l_len   = input.int(10, "Length", minval = 2, maxval = 50, inline = "l1", group = G_LIQ, tooltip = "القمة/القاع يجب أن يكون أعلى/أدنى من هذا العدد من الشموع قبله وبعده")
 int   l_max   = input.int(5,  "Max",    minval = 1, maxval = 30, inline = "l1", group = G_LIQ, tooltip = "عدد المناطق لكل جهة (قمم / قيعان). تُحذف الأبعد عن السعر أولاً")
@@ -137,7 +151,7 @@ int   l_ext   = input.int(20, "Extend", minval = 1, maxval = 100, group = G_LIQ,
 float l_depth = input.float(0.835, "Zone depth (× ATR 300)", minval = 0.1, step = 0.05, group = G_LIQ, tooltip = "سُمك المنطقة من رأس الذيل إلى الداخل")
 
 // --- ORB ---
-int    o_utc  = input.int(3, "+/- UTC", minval = -12, maxval = 14, group = G_ORB, tooltip = "فرق التوقيت عن UTC للجلسة. فوركس: لندن 0800-0830 (UTC+0)، نيويورك 0930-1000 (UTC-4 صيفاً)")
+int    o_utc  = input.int(3, "+/- UTC", minval = -12, maxval = 14, group = G_ORB, tooltip = "يُستخدم مع Asset = Custom فقط (الإعدادات الجاهزة لها جلساتها). فرق التوقيت عن UTC للجلسة. فوركس: لندن 0800-0830 (UTC+0)، نيويورك 0930-1000 (UTC-4 صيفاً)")
 string o_sess = input.session("0945-1015", "Session", inline = "o1", group = G_ORB)
 bool   o_sig  = input.bool(true, "Signals", group = G_ORB)
 int    o_days = input.int(30, "Days to show", minval = 1, maxval = 150, group = G_ORB)
@@ -210,6 +224,22 @@ color  C_BEAR  = input.color(#FF1744, "", inline = "c3", group = G_STY)
 // ════════════════════════════════════════════════════════════
 // 2. الحسابات العامة (كل دوال ta.* في النطاق العام)
 // ════════════════════════════════════════════════════════════
+// --- إعدادات الأصل (Preset): ذهب / كريبتو / فوركس، أو Custom = المدخلات اليدوية ---
+string tkU    = str.upper(syminfo.ticker)
+bool   isGold = str.contains(tkU, "XAU") or str.contains(tkU, "GOLD") or syminfo.root == "GC" or syminfo.root == "MGC"
+string assetK = p_asset == "Gold (XAUUSD)" ? "gold" : p_asset == "Crypto" ? "crypto" : p_asset == "Forex (EURUSD / GBPUSD)" ? "forex" : p_asset == "Custom" ? "custom" : isGold ? "gold" : syminfo.type == "crypto" ? "crypto" : syminfo.type == "forex" ? "forex" : "custom"
+string o_tz    = "UTC" + (o_utc >= 0 ? "+" : "-") + str.tostring(math.abs(o_utc))
+float  P_sens  = assetK == "gold" ? 1.7 : assetK == "crypto" ? 2.0 : assetK == "forex" ? 1.5 : s_sens
+float  P_tpAtr = assetK == "gold" ? 3.0 : assetK == "crypto" ? 4.0 : assetK == "forex" ? 3.0 : s_tpAtr
+float  P_trail = assetK == "gold" ? 2.5 : assetK == "crypto" ? 2.8 : assetK == "forex" ? 2.0 : s_trailR
+string P_orbS  = assetK == "gold" ? "0930-1000" : assetK == "crypto" ? "0000-0030" : assetK == "forex" ? "0800-0830" : o_sess
+string P_orbTz = assetK == "gold" ? "America/New_York" : assetK == "crypto" ? "UTC" : assetK == "forex" ? "Europe/London" : o_tz
+bool   P_actOn = p_sessF and (assetK == "gold" or assetK == "forex") and timeframe.isintraday
+string P_actS  = assetK == "gold" ? "0300-1600" : "0700-1700"
+string P_actTz = assetK == "gold" ? "America/New_York" : "Europe/London"
+bool   sessOk  = not P_actOn or not na(time(timeframe.period, P_actS, P_actTz))
+string assetTxt = assetK == "gold" ? "Gold" : assetK == "crypto" ? "Crypto" : assetK == "forex" ? "Forex" : "Custom"
+
 float atr14   = ta.atr(14)
 float trendMa = ta.ema(close, s_trendLen)
 float atr10   = ta.atr(10)
@@ -220,8 +250,8 @@ float ema5Chg = ta.change(ta.ema(close, 5))
 bool  barOk   = not s_confirm or barstate.isconfirmed
 bool  conf    = barstate.isconfirmed
 
-[stLine, stDir] = ta.supertrend(f_sigFactor(s_sens), s_atrLen)
-[ceLong, ceShort, ceDir] = f_chandelier(f_ceMult(s_sens), s_atrLen, s_ceLen)
+[stLine, stDir] = ta.supertrend(f_sigFactor(P_sens), s_atrLen)
+[ceLong, ceShort, ceDir] = f_chandelier(f_ceMult(P_sens), s_atrLen, s_ceLen)
 bool  useCE  = s_engine == "Chandelier"
 int   trend  = useCE ? ceDir : (stDir < 0 ? 1 : -1)
 float engStop = useCE ? (trend == 1 ? ceLong : ceShort) : stLine
@@ -239,6 +269,41 @@ float mfiR  = ta.mfi(hlc3, r_len)
 float rmi   = hasVol and not na(mfiR) ? (rsiR + mfiR) / 2 : rsiR
 float rmiMa = ta.ema(close, r_len)
 
+// الفريم الأكبر: اتجاه نفس المحرك على شمعة مغلقة (بدون إعادة رسم)
+f_autoHtf() =>
+    int sec = timeframe.in_seconds()
+    sec <= 180 ? "15" : sec <= 900 ? "60" : sec <= 3600 ? "240" : sec <= 14400 ? "D" : "W"
+
+f_engDir() =>
+    [hl, hs, hd] = f_chandelier(f_ceMult(P_sens), s_atrLen, s_ceLen)
+    [hst, hsd]   = ta.supertrend(f_sigFactor(P_sens), s_atrLen)
+    int dd = s_engine == "Chandelier" ? hd : (hsd < 0 ? 1 : -1)
+    dd[1]
+
+string htfTf  = q_htf == "" ? f_autoHtf() : q_htf
+int    htfDir = request.security(syminfo.tickerid, htfTf, f_engDir(), lookahead = barmerge.lookahead_on)
+
+// الدلتا: شراء − بيع من شموع الفريم الأصغر داخل كل شمعة (تقدير من موقع الإغلاق إذا لم تتوفر)
+f_autoLtf() =>
+    int sec = timeframe.in_seconds()
+    sec < 60 ? timeframe.period : sec <= 900 ? "1" : sec <= 3600 ? "5" : sec <= 14400 ? "15" : "60"
+
+[ltfO, ltfC, ltfV] = request.security_lower_tf(syminfo.tickerid, f_autoLtf(), [open, close, volume])
+float barDelta = 0.0
+if ltfC.size() > 0
+    for [i, c] in ltfC
+        float o = ltfO.get(i)
+        barDelta += c > o ? nz(ltfV.get(i)) : c < o ? -nz(ltfV.get(i)) : 0.0
+else
+    float rg = high - low
+    barDelta := rg > 0 ? vol * ((close - low) - (high - close)) / rg : 0.0
+float delta3 = math.sum(barDelta, 3)
+
+// ADX للهيكل، وقاع/قمة آخر 5 شموع لوقف Risk:Reward
+[diP, diM, adxV] = ta.dmi(14, 14)
+float swLo = ta.lowest(low, 5)
+float swHi = ta.highest(high, 5)
+
 // محاور الوحدات
 // المحور: يسار طويل ويمين قصير (Small = 10/5، Medium/Big = 20/10، Macro = 40/20)
 int   t_left  = t_sens == "Small" ? 10 : t_sens == "Macro" ? 40 : 20
@@ -253,32 +318,22 @@ float obPh   = f_pivHigh(ob_left, ob_len)
 float obPl   = f_pivLow(ob_left, ob_len)
 
 // ORB
-string o_tz   = "UTC" + (o_utc >= 0 ? "+" : "-") + str.tostring(math.abs(o_utc))
-bool   inOrb  = m_orb and timeframe.isintraday and not na(time(timeframe.period, o_sess, o_tz))
+bool   inOrb  = m_orb and timeframe.isintraday and not na(time(timeframe.period, P_orbS, P_orbTz))
 
 // تحويل عملة الرمز إلى عملة الحساب
 float fxRate = request.currency_rate(syminfo.currency, c_cur, ignore_invalid_currency = true)
 
 // ════════════════════════════════════════════════════════════
-// 3. إشارات الاتجاه (▲ / ▲+ / ▼ / ▼+)
+// 3. انقلاب الاتجاه (الإشارة الخام قبل فلتر التوافق في القسم 8)
 // ════════════════════════════════════════════════════════════
 var int sigState = 0
-bool buySig  = m_sig and barOk and bar_index > s_atrLen and trend == 1 and sigState != 1
-bool sellSig = m_sig and barOk and bar_index > s_atrLen and trend == -1 and sigState != -1
-if buySig
+bool rawBuy  = m_sig and barOk and bar_index > s_atrLen and trend == 1 and sigState != 1
+bool rawSell = m_sig and barOk and bar_index > s_atrLen and trend == -1 and sigState != -1
+if rawBuy
     sigState := 1
-if sellSig
+if rawSell
     sigState := -1
-
-// "+" = الإشارة في جهة المتوسط البطيء (مع الاتجاه العام)
-bool strongBuy  = buySig and close > trendMa
-bool strongSell = sellSig and close < trendMa
-float sigOff    = nz(atr14) * 0.8
-
-plotshape(buySig and not strongBuy ? low - sigOff : na, "Buy Label", shape.labelup, location.absolute, C_UP, text = "▲", textcolor = C_TXT, size = size.small)
-plotshape(strongBuy ? low - sigOff : na, "Buy Label +", shape.labelup, location.absolute, C_UP, text = "▲+", textcolor = C_TXT, size = size.small)
-plotshape(sellSig and not strongSell ? high + sigOff : na, "Sell Label", shape.labeldown, location.absolute, C_DN, text = "▼", textcolor = C_TXT, size = size.small)
-plotshape(strongSell ? high + sigOff : na, "Sell Label +", shape.labeldown, location.absolute, C_DN, text = "▼+", textcolor = C_TXT, size = size.small)
+float sigOff = nz(atr14) * 0.8
 
 
 // الشموع
@@ -290,90 +345,14 @@ plotcandle(showCnd ? open : na, showCnd ? high : na, showCnd ? low : na, showCnd
 barcolor(showCnd ? candleCol : na, title = "Bar Color")
 
 // ════════════════════════════════════════════════════════════
-// 4. Trailing TP + مستويات الأهداف
-// ════════════════════════════════════════════════════════════
-var int   tDir      = 0
-var float tEntry    = na
-var float tSL       = na
-var float tRisk     = na
-var int   tpHit     = 0
-var float trail     = na
-var bool  trailLive = false
-var array<line>  tpLines  = array.new<line>()
-var array<label> tpLabels = array.new<label>()
-
-f_tpPrice(int k) =>
-    tEntry + tDir * tRisk * (k == 1 ? 1.0 : s_tp2)
-
-bool trailExit = false
-bool tpHitNow  = false
-bool newSig    = buySig or sellSig
-
-if newSig
-    while tpLines.size() > 0
-        tpLines.pop().delete()
-    while tpLabels.size() > 0
-        tpLabels.pop().delete()
-    tDir      := buySig ? 1 : -1
-    tEntry    := close
-    tSL       := engStop
-    float rDist = math.abs(close - engStop)
-    float tpBase = s_tpMode == "ATR 50" or na(rDist) or rDist <= 0 ? nz(atr50, nz(atr14)) : rDist
-    tRisk     := math.max(tpBase * s_tpAtr, syminfo.mintick) // مسافة TP1 ثابتة من لحظة الإشارة
-    tpHit     := 0
-    trail     := na
-    trailLive := s_trail and (tDir == 1 or s_trailShort)
-    if s_levels
-        int x2 = bar_index + 10
-        color tc = tDir == 1 ? C_UP : C_DN
-        tpLines.push(line.new(bar_index, tSL, x2, tSL, color = C_SL, style = line.style_dashed))
-        tpLabels.push(label.new(x2, tSL, "SL " + str.tostring(tSL, format.mintick), style = label.style_label_left, color = C_SL, textcolor = color.black, size = size.tiny))
-        tpLines.push(line.new(bar_index, tEntry, x2, tEntry, color = color.new(C_TXT, 50), style = line.style_dotted))
-        tpLabels.push(label.new(x2, tEntry, "Entry " + str.tostring(tEntry, format.mintick), style = label.style_label_left, color = color.new(C_TXT, 70), textcolor = color.black, size = size.tiny))
-        for k = 1 to 2
-            float p = f_tpPrice(k)
-            tpLines.push(line.new(bar_index, p, x2, p, color = tc, style = line.style_dashed))
-            tpLabels.push(label.new(x2, p, "TP" + str.tostring(k) + " " + str.tostring(p, format.mintick), style = label.style_label_left, color = tc, textcolor = C_TXT, size = size.tiny))
-else if tDir != 0
-    for k = 1 to 2
-        float p = f_tpPrice(k)
-        if tpHit < k and (tDir == 1 ? high >= p : low <= p)
-            tpHit    := k
-            tpHitNow := true
-            if m_sig and s_tp
-                string side = tDir == 1 ? "LONG" : "SHORT"
-                label.new(bar_index, na, s_tpIcon, yloc = tDir == 1 ? yloc.abovebar : yloc.belowbar, style = label.style_none, textcolor = C_TP, size = size.normal, tooltip = side + " TP" + str.tostring(k) + " Reached")
-            if s_levels and tpLabels.size() == 4
-                tpLabels.get(k + 1).set_text("TP" + str.tostring(k) + " ✓ " + str.tostring(p, format.mintick))
-    if s_levels
-        int x2 = bar_index + 10
-        for ln in tpLines
-            ln.set_x2(x2)
-        for lb in tpLabels
-            lb.set_x(x2)
-
-// الوقف المتحرك: يتبع السعر بمسافة ATR × Trailing TP ولا يرجع للخلف
-if trailLive and tDir != 0
-    float cand = hl2 - tDir * s_trailR * nz(atr10) // hl2 − Trailing × ATR(10) كما في الأصلي
-    trail := na(trail) ? cand : tDir == 1 ? math.max(trail, cand) : math.min(trail, cand)
-    if not newSig and barOk and (tDir == 1 ? close < trail : close > trail)
-        trailLive := false
-        trailExit := true
-
-bool tpLong  = tpHitNow and tDir == 1
-bool tpShort = tpHitNow and tDir == -1
-
-bool showTrail = m_sig and s_trail and trailLive // لا يُرسم على شمعة الخروج
-plot(showTrail and tDir == 1 ? trail : na, "Up Trend", color = C_TP, linewidth = 2, style = plot.style_steplinebr)
-plot(showTrail and tDir == -1 ? trail : na, "Down Trend", color = C_DN, linewidth = 2, style = plot.style_steplinebr)
-
-// ════════════════════════════════════════════════════════════
-// 5. السيولة (منطقة + أشرطة Bull/Bear + صندوق Delta)
+// 4. السيولة (منطقة + أشرطة Bull/Bear + صندوق Delta)
 // ════════════════════════════════════════════════════════════
 // Bull% = موقع إغلاق شمعة القمة/القاع داخل مداها، Delta = الحجم × (2 × Bull% − 1)
 var array<Liq> liqs = array.new<Liq>()
 bool liqSweepUp = false // الذيل اخترق رأس منطقة قمة (سُحبت السيولة)
 bool liqSweepDn = false // الذيل اخترق رأس منطقة قاع
+bool liqTouchUp = false // السعر داخل منطقة قمة (مقاومة)
+bool liqTouchDn = false // السعر داخل منطقة قاع (دعم)
 
 f_liqOverlap(float top, float bot) =>
     bool hit = false
@@ -457,6 +436,8 @@ if m_liq and conf
                 f_liqDelete(z)
                 liqs.remove(i)
             else
+                liqTouchUp := liqTouchUp or (z.dir == 1 and high >= z.bot)
+                liqTouchDn := liqTouchDn or (z.dir == -1 and low <= z.top)
                 f_liqLayout(z, bar_index + l_ext)
     // منطقة جديدة من قمة/قاع محوري، إلا إذا تداخلت مع منطقة قائمة
     if not na(liqPh) and not f_liqOverlap(liqPh, liqPh - zh)
@@ -467,7 +448,7 @@ if m_liq and conf
     f_liqTrim(-1)
 
 // ════════════════════════════════════════════════════════════
-// 6. نطاق الافتتاح ORB (خلفية أثناء الجلسة، ثم 3 خطوط وتعبئتان حتى الجلسة التالية)
+// 5. نطاق الافتتاح ORB (خلفية أثناء الجلسة، ثم 3 خطوط وتعبئتان حتى الجلسة التالية)
 // ════════════════════════════════════════════════════════════
 var array<OrbSet> orbs = array.new<OrbSet>()
 var float orbHi     = na
@@ -535,7 +516,7 @@ if o_sig and orbDn
     label.new(bar_index, na, "", yloc = yloc.abovebar, style = label.style_label_down, color = C_DN, size = size.tiny)
 
 // ════════════════════════════════════════════════════════════
-// 7. خطوط الاتجاه (TrendLines)
+// 6. خطوط الاتجاه (TrendLines)
 // ════════════════════════════════════════════════════════════
 // القمة الجديدة تُربط بأقرب قمة سابقة أعلى منها (خط هابط)، والقاع الجديد بأقرب قاع سابق أدنى منه (خط صاعد)
 var array<TLine> tls    = array.new<TLine>()
@@ -611,9 +592,11 @@ if m_tl and conf
                 tlBreakDn := tlBreakDn or t.dir == 1
 
 // ════════════════════════════════════════════════════════════
-// 8. كتل الأوامر (من القمم والقيعان الكبرى + Breaker)
+// 7. كتل الأوامر (من القمم والقيعان الكبرى + Breaker)
 // ════════════════════════════════════════════════════════════
 var array<OB> obs = array.new<OB>()
+bool obTouchBull = false // السعر لمس كتلة طلب (أو Breaker عرض انقلب دعماً)
+bool obTouchBear = false
 float obVolAvg = ta.sma(vol, 20)
 
 // تدرج داخل الكتلة: 4 شرائح من الغامق (رأس الذيل) إلى الفاتح (جهة الجسم)
@@ -680,6 +663,9 @@ if m_ob and conf
             if not kill and bar_index > o.xc
                 float ov = math.min(high, o.top) - math.max(low, o.bot)
                 if ov > 0
+                    int td = o.breaker ? -o.dir : o.dir
+                    obTouchBull := obTouchBull or td == 1
+                    obTouchBear := obTouchBear or td == -1
                     float rg = high - low
                     o.rem := o.rem - vol * (rg > 0 ? ov / rg : 1.0)
                 bool brokeOut = o.dir == 1 ? close < o.bot : close > o.top
@@ -705,7 +691,171 @@ if m_ob and conf
                     b.set_right(bar_index)
 
 // ════════════════════════════════════════════════════════════
-// 9. RMI Trend
+// 8. فلتر التوافق (Confluence Score ⭐) + الإشارات
+// ════════════════════════════════════════════════════════════
+// الإشارة الخام (انقلاب الاتجاه) تُقيَّم بـ 6 شروط، وتُقبل إذا وصلت إلى Min stars وكانت داخل الجلسة النشطة
+var int lastZoneB = -100000
+var int lastZoneS = -100000
+var int lastTlB   = -100000
+var int lastTlS   = -100000
+if liqSweepDn or liqTouchDn or obTouchBull
+    lastZoneB := bar_index
+if liqSweepUp or liqTouchUp or obTouchBear
+    lastZoneS := bar_index
+if tlBreakUp
+    lastTlB := bar_index
+if tlBreakDn
+    lastTlS := bar_index
+
+bool zoneAvail = m_liq or m_ob
+int  maxSc     = 4 + (zoneAvail ? 1 : 0) + (hasVol ? 1 : 0)
+int  minSc     = math.min(q_min, maxSc)
+
+f_mark(bool ok, string name) =>
+    (ok ? "✓ " : "✗ ") + name + "\n"
+
+f_score(int d) =>
+    bool c1 = d == 1 ? close > trendMa : close < trendMa
+    bool c2 = htfDir == d
+    bool c3 = zoneAvail and bar_index - (d == 1 ? lastZoneB : lastZoneS) <= q_zone
+    bool c4 = d == 1 ? rmi > 50 : rmi < 50
+    bool c5 = hasVol and (d == 1 ? delta3 > 0 : delta3 < 0)
+    bool orbOk = orbReady and orbLive and (d == 1 ? close > orbHi : close < orbLo)
+    bool c6 = (adxV >= q_adx and (d == 1 ? diP > diM : diM > diP)) or orbOk or bar_index - (d == 1 ? lastTlB : lastTlS) <= q_zone
+    int sc = (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0) + (c5 ? 1 : 0) + (c6 ? 1 : 0)
+    string tip = f_mark(c1, "EMA " + str.tostring(s_trendLen)) + f_mark(c2, "Higher TF " + htfTf) + (zoneAvail ? f_mark(c3, "Zone: OB / Liquidity / Sweep") : "— Zone (Liquidity و Order Blocks مطفأة)\n") + f_mark(c4, "RMI " + str.tostring(rmi, "#.0")) + (hasVol ? f_mark(c5, "Delta " + str.tostring(delta3, format.volume)) : "— Delta (لا يوجد حجم)\n") + f_mark(c6, "Structure: ADX " + str.tostring(adxV, "#.0") + " / ORB / TrendLine")
+    [sc, tip]
+
+[scB, tipB] = f_score(1)
+[scS, tipS] = f_score(-1)
+bool passB = scB >= minSc and sessOk
+bool passS = scS >= minSc and sessOk
+
+bool buySig     = rawBuy and passB
+bool sellSig    = rawSell and passS
+bool strongBuy  = buySig and close > trendMa // "+" = مع المتوسط البطيء
+bool strongSell = sellSig and close < trendMa
+bool aBuy       = buySig and scB >= 5        // ⭐ = 5 نقاط أو أكثر
+bool aSell      = sellSig and scS >= 5
+
+var string lastScTxt = "—"
+f_sigLabel(int d, int sc, string tip, bool pass) =>
+    bool   plus = d == 1 ? close > trendMa : close < trendMa
+    string txt  = (d == 1 ? "▲" : "▼") + (plus ? "+" : "") + " " + str.tostring(sc) + "/" + str.tostring(maxSc) + (sc >= 5 ? " ⭐" : "")
+    color  c    = pass ? (d == 1 ? C_UP : C_DN) : color.new(color.gray, 35)
+    string why  = pass ? "" : sessOk ? "\nمرفوضة: أقل من " + str.tostring(minSc) + " نجوم" : "\nمرفوضة: خارج الجلسة النشطة"
+    label.new(bar_index, d == 1 ? low - sigOff : high + sigOff, txt, style = d == 1 ? label.style_label_up : label.style_label_down, color = c, textcolor = C_TXT, size = pass ? size.small : size.tiny, tooltip = (d == 1 ? "BUY" : "SELL") + " — Score " + str.tostring(sc) + "/" + str.tostring(maxSc) + "\n" + tip + why)
+    true
+
+if rawBuy and (passB or q_weak)
+    f_sigLabel(1, scB, tipB, passB)
+if rawSell and (passS or q_weak)
+    f_sigLabel(-1, scS, tipS, passS)
+if buySig
+    lastScTxt := "▲ " + str.tostring(scB) + "/" + str.tostring(maxSc)
+if sellSig
+    lastScTxt := "▼ " + str.tostring(scS) + "/" + str.tostring(maxSc)
+
+// ════════════════════════════════════════════════════════════
+// 9. Trailing TP + مستويات الأهداف (تتبع الإشارات المقبولة فقط)
+// ════════════════════════════════════════════════════════════
+var int   tDir      = 0
+var float tEntry    = na
+var float tSL       = na
+var float tRisk     = na
+var int   tpHit     = 0
+var float trail     = na
+var bool  trailLive = false
+var array<line>  tpLines  = array.new<line>()
+var array<label> tpLabels = array.new<label>()
+
+bool  rrMode = s_tpMode == "Risk:Reward"
+float tp2M   = rrMode ? s_rr : s_tp2
+
+f_tpPrice(int k) =>
+    tEntry + tDir * tRisk * (k == 1 ? 1.0 : tp2M)
+
+bool trailExit = false
+bool tpHitNow  = false
+bool slHit     = false
+bool newSig    = buySig or sellSig
+// انقلاب الاتجاه عكس الصفقة (حتى لو كانت الإشارة الجديدة مرفوضة) يُنهي الصفقة
+bool flipExit  = not newSig and tDir != 0 and ((rawBuy and tDir == -1) or (rawSell and tDir == 1))
+
+if newSig
+    while tpLines.size() > 0
+        tpLines.pop().delete()
+    while tpLabels.size() > 0
+        tpLabels.pop().delete()
+    tDir      := buySig ? 1 : -1
+    tEntry    := close
+    float a14 = nz(atr14, high - low)
+    float swD = math.min(math.max(tDir == 1 ? close - (swLo - 0.3 * a14) : (swHi + 0.3 * a14) - close, 0.7 * a14), 3.0 * a14)
+    tSL       := rrMode ? close - tDir * swD : engStop
+    float rDist = math.abs(close - engStop)
+    float tpBase = s_tpMode == "ATR 50" or na(rDist) or rDist <= 0 ? nz(atr50, nz(atr14)) : rDist
+    tRisk     := math.max(rrMode ? swD : tpBase * P_tpAtr, syminfo.mintick) // مسافة TP1 ثابتة من لحظة الإشارة
+    tpHit     := 0
+    trail     := na
+    trailLive := s_trail and (tDir == 1 or s_trailShort)
+    if s_levels
+        int x2 = bar_index + 10
+        color tc = tDir == 1 ? C_UP : C_DN
+        tpLines.push(line.new(bar_index, tSL, x2, tSL, color = C_SL, style = line.style_dashed))
+        tpLabels.push(label.new(x2, tSL, "SL " + str.tostring(tSL, format.mintick), style = label.style_label_left, color = C_SL, textcolor = color.black, size = size.tiny))
+        tpLines.push(line.new(bar_index, tEntry, x2, tEntry, color = color.new(C_TXT, 50), style = line.style_dotted))
+        tpLabels.push(label.new(x2, tEntry, "Entry " + str.tostring(tEntry, format.mintick), style = label.style_label_left, color = color.new(C_TXT, 70), textcolor = color.black, size = size.tiny))
+        for k = 1 to 2
+            float p = f_tpPrice(k)
+            tpLines.push(line.new(bar_index, p, x2, p, color = tc, style = line.style_dashed))
+            tpLabels.push(label.new(x2, p, "TP" + str.tostring(k) + " " + str.tostring(p, format.mintick), style = label.style_label_left, color = tc, textcolor = C_TXT, size = size.tiny))
+else if flipExit
+    tDir      := 0
+    trailLive := false
+else if tDir != 0
+    // Risk:Reward: ضرب الوقف قبل TP2 يُنهي الصفقة (يُفحص أولاً إذا لمس الاثنين نفس الشمعة)
+    if rrMode and tpHit < 2 and (tDir == 1 ? low <= tSL : high >= tSL)
+        slHit := true
+        if m_sig and s_tp
+            label.new(bar_index, na, "✗", yloc = tDir == 1 ? yloc.belowbar : yloc.abovebar, style = label.style_none, textcolor = C_SL, size = size.normal, tooltip = (tDir == 1 ? "LONG" : "SHORT") + " Stop Loss")
+    for k = 1 to 2
+        float p = f_tpPrice(k)
+        if not slHit and tpHit < k and (tDir == 1 ? high >= p : low <= p)
+            tpHit    := k
+            tpHitNow := true
+            if m_sig and s_tp
+                string side = tDir == 1 ? "LONG" : "SHORT"
+                label.new(bar_index, na, s_tpIcon, yloc = tDir == 1 ? yloc.abovebar : yloc.belowbar, style = label.style_none, textcolor = C_TP, size = size.normal, tooltip = side + " TP" + str.tostring(k) + " Reached")
+            if s_levels and tpLabels.size() == 4
+                tpLabels.get(k + 1).set_text("TP" + str.tostring(k) + " ✓ " + str.tostring(p, format.mintick))
+    if s_levels and not slHit
+        int x2 = bar_index + 10
+        for ln in tpLines
+            ln.set_x2(x2)
+        for lb in tpLabels
+            lb.set_x(x2)
+
+if slHit
+    tDir      := 0
+    trailLive := false
+
+// الوقف المتحرك: يتبع السعر بمسافة ATR × Trailing TP ولا يرجع للخلف
+if trailLive and tDir != 0
+    float cand = hl2 - tDir * P_trail * nz(atr10) // hl2 − Trailing × ATR(10) كما في الأصلي
+    trail := na(trail) ? cand : tDir == 1 ? math.max(trail, cand) : math.min(trail, cand)
+    if not newSig and barOk and (tDir == 1 ? close < trail : close > trail)
+        trailLive := false
+        trailExit := true
+
+bool tpLong  = tpHitNow and tDir == 1
+bool tpShort = tpHitNow and tDir == -1
+
+bool showTrail = m_sig and s_trail and trailLive // لا يُرسم على شمعة الخروج
+plot(showTrail and tDir == 1 ? trail : na, "Up Trend", color = C_TP, linewidth = 2, style = plot.style_steplinebr)
+plot(showTrail and tDir == -1 ? trail : na, "Down Trend", color = C_DN, linewidth = 2, style = plot.style_steplinebr)
+
+// ════════════════════════════════════════════════════════════
+// 10. RMI Trend
 // ════════════════════════════════════════════════════════════
 var int rState = 0
 bool rPos = m_rmi and barOk and rmi > r_pos and ema5Chg > 0 and rState != 1
@@ -720,7 +870,7 @@ plotshape(rPos, "RMI Positive", shape.triangleup, location.belowbar, r_colUp, si
 plotshape(rNeg, "RMI Negative", shape.triangledown, location.abovebar, r_colDn, size = size.tiny)
 
 // ════════════════════════════════════════════════════════════
-// 10. الحجم على الشارت
+// 11. الحجم على الشارت
 // ════════════════════════════════════════════════════════════
 bool vSpike = m_vol and hasVol and not na(rvol) and rvol >= v_mult
 plotshape(vSpike and close >= open, "Volume Spike Up", shape.diamond, location.belowbar, color.new(C_UP, 20), size = size.tiny)
@@ -728,7 +878,7 @@ plotshape(vSpike and close < open, "Volume Spike Down", shape.diamond, location.
 plot(m_vol and v_vwap and hasVol ? vwapV : na, "VWAP", color = color.new(#FFB300, 20), linewidth = 2)
 
 // ════════════════════════════════════════════════════════════
-// 11. Volume Screener (جدول عدة رموز)
+// 12. Volume Screener (جدول عدة رموز)
 // ════════════════════════════════════════════════════════════
 f_scrData() =>
     [stv, std] = ta.supertrend(f_sigFactor(s_sens), s_atrLen)
@@ -790,7 +940,7 @@ if m_vol and barstate.islast
     f_scrRow(10, on10, sym10, pc10, ch10, rv10, dr10, rs10)
 
 // ════════════════════════════════════════════════════════════
-// 12. إدارة رأس المال (Capital / % Risk / % SL / RR)
+// 13. إدارة رأس المال (Capital / % Risk / % SL / RR)
 // ════════════════════════════════════════════════════════════
 // الاتجاه الحالي يحدد الشراء أو البيع، والوقف نسبة مئوية من سعر الدخول
 float rate    = na(fxRate) ? 1.0 : fxRate
@@ -816,9 +966,9 @@ f_sizeText(float u) =>
     res
 
 // ════════════════════════════════════════════════════════════
-// 13. لوحة المعلومات
+// 14. لوحة المعلومات
 // ════════════════════════════════════════════════════════════
-var table dash = table.new(position.bottom_right, 2, 12, bgcolor = color.new(#0A0E17, 15), border_width = 1, border_color = color.new(color.gray, 85))
+var table dash = table.new(position.bottom_right, 2, 16, bgcolor = color.new(#0A0E17, 15), border_width = 1, border_color = color.new(color.gray, 85))
 
 f_row(int row, string k, string v, color c) =>
     dash.cell(0, row, k, text_color = C_TXT, text_size = size.small, text_halign = text.align_left)
@@ -841,16 +991,24 @@ if m_dash and barstate.islast
     f_row(9, "Position value", m_risk and not na(posVal) ? str.tostring(posVal, "#,###.##") + " " + c_cur : "—", C_TXT)
     f_row(10, "SL " + str.tostring(c_sl) + "%", m_risk ? str.tostring(rkSL, format.mintick) : "—", C_DN)
     f_row(11, "TP " + str.tostring(c_rr) + "R", m_risk ? str.tostring(rkTP, format.mintick) : "—", C_TP)
+    f_row(12, "Asset preset", assetTxt + (P_actOn ? (sessOk ? " · session ✓" : " · off-session") : ""), sessOk ? C_TXT : color.gray)
+    f_row(13, "Last score", lastScTxt + " (min " + str.tostring(minSc) + ")", C_SL)
+    f_row(14, "Higher TF " + htfTf, htfDir == 1 ? "Bullish ▲" : htfDir == -1 ? "Bearish ▼" : "—", htfDir == 1 ? C_UP : htfDir == -1 ? C_DN : color.gray)
+    f_row(15, "Delta (3 bars)", hasVol ? str.tostring(delta3, format.volume) : "no volume data", delta3 > 0 ? C_UP : delta3 < 0 ? C_DN : color.gray)
 
 // ════════════════════════════════════════════════════════════
-// 14. التنبيهات
+// 15. التنبيهات
 // ════════════════════════════════════════════════════════════
 // تنبيه شامل: أنشئ تنبيهاً واختر "Any alert() function call"
 string tk = syminfo.ticker + " @ " + str.tostring(close, format.mintick)
+string scTxt = " ⭐" + str.tostring(buySig ? scB : scS) + "/" + str.tostring(maxSc) + " "
+string slTxt = " | SL " + str.tostring(tSL, format.mintick) + " | TP2 " + str.tostring(f_tpPrice(2), format.mintick)
 if buySig
-    alert("HFJ Pro: " + (strongBuy ? "▲+ Buy " : "▲ Buy ") + tk, alert.freq_once_per_bar_close)
+    alert("HFJ Pro: " + (strongBuy ? "▲+ Buy" : "▲ Buy") + scTxt + tk + slTxt, alert.freq_once_per_bar_close)
 if sellSig
-    alert("HFJ Pro: " + (strongSell ? "▼+ Sell " : "▼ Sell ") + tk, alert.freq_once_per_bar_close)
+    alert("HFJ Pro: " + (strongSell ? "▼+ Sell" : "▼ Sell") + scTxt + tk + slTxt, alert.freq_once_per_bar_close)
+if slHit
+    alert("HFJ Pro: Stop Loss ✗ " + tk, alert.freq_once_per_bar)
 if tpHitNow
     alert("HFJ Pro: " + (tDir == 1 ? "LONG" : "SHORT") + " TP" + str.tostring(tpHit) + " Reached ✓ " + tk, alert.freq_once_per_bar)
 if trailExit
@@ -870,6 +1028,9 @@ alertcondition(buySig, "Buy", "HFJ Pro: Buy على {{ticker}} عند {{close}}")
 alertcondition(sellSig, "Sell", "HFJ Pro: Sell على {{ticker}} عند {{close}}")
 alertcondition(strongBuy, "Strong Buy", "HFJ Pro: Buy+ على {{ticker}} عند {{close}}")
 alertcondition(strongSell, "Strong Sell", "HFJ Pro: Sell+ على {{ticker}} عند {{close}}")
+alertcondition(aBuy, "A+ Buy (5+ stars)", "HFJ Pro: Buy ⭐5+ على {{ticker}} عند {{close}}")
+alertcondition(aSell, "A+ Sell (5+ stars)", "HFJ Pro: Sell ⭐5+ على {{ticker}} عند {{close}}")
+alertcondition(slHit, "Stop Loss", "HFJ Pro: Stop Loss على {{ticker}}")
 alertcondition(tpLong or tpShort, "TP", "HFJ Pro: TP ✓ على {{ticker}} عند {{close}}")
 alertcondition(trailExit, "Trailing TP", "HFJ Pro: Trailing TP على {{ticker}}")
 alertcondition(liqSweepUp or liqSweepDn, "Liquidity Sweep", "HFJ Pro: اصطياد سيولة على {{ticker}}")
