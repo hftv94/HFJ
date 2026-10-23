@@ -25,9 +25,14 @@ bool  st_be   = input.bool(false, "Break-even at TP1 (1R)", group = G_STR, toolt
 bool  st_flip = input.bool(true, "Exit on trend flip", group = G_STR, tooltip = "إغلاق الصفقة إذا انقلب الاتجاه ضدها قبل الوقف أو الهدف")
 int   st_from = input.time(timestamp("01 Jan 2024 00:00 +0000"), "Start date", group = G_STR)
 
+bool  st_min1 = input.bool(true, "Min 1 contract (futures)", group = G_STR, tooltip = "العقود الآجلة: إذا كانت المخاطرة أقل من عقد واحد يُدخل بعقد واحد. استخدم العقود الصغيرة (MES / MNQ / MGC / MCL) أو ارفع رأس المال من Properties")
+
+// حجم الصفقة: المخاطرة بعملة الحساب ÷ (مسافة الوقف × قيمة النقطة × سعر تحويل عملة الرمز)
+float stRate = nz(request.currency_rate(syminfo.currency, "USD", ignore_invalid_currency = true), 1.0)
 bool  stOk   = time >= st_from
 float stDist = math.abs(tEntry - tSL)
-float stQty  = stDist > 0 ? strategy.equity * st_risk / 100 / (stDist * syminfo.pointvalue) : 0.0
+float stRaw  = stDist > 0 ? strategy.equity * st_risk / 100 / (stDist * syminfo.pointvalue * stRate) : 0.0
+float stQty  = syminfo.type == "futures" ? (st_min1 ? math.max(math.floor(stRaw), 1) : math.floor(stRaw)) : syminfo.type == "forex" ? math.floor(stRaw / 1000) * 1000 : syminfo.type == "stock" or syminfo.type == "fund" ? math.floor(stRaw) : stRaw
 
 if buySig and stOk and stQty > 0
     strategy.entry("Long", strategy.long, qty = stQty)

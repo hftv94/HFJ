@@ -1,7 +1,7 @@
 // This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
 // © HFJ_Quantum_Strategy_2026
-// HFJ Pro Strategy v4.0 — نسخة استراتيجية من HFJ Pro Suite: دخول بالإشارات المقبولة فقط، وقف خلف القاع/القمة وهدف 1:2
-// الوحدات: إعدادات الأصل (ذهب / كريبتو / فوركس) | إشارات الاتجاه (▲ / ▲+) مع تقييم التوافق ⭐ + علامات TP + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
+// HFJ Pro Strategy v4.1 — نسخة استراتيجية من HFJ Pro Suite: دخول بالإشارات المقبولة فقط، وقف خلف القاع/القمة وهدف 1:2
+// الوحدات: إعدادات الأصل (ذهب / كريبتو / فوركس / مؤشرات وعقود) | إشارات الاتجاه (▲ / ▲+) مع تقييم التوافق ⭐ + علامات TP + Trailing TP | خطوط الاتجاه | ORB | السيولة | RMI | Volume Screener | إدارة رأس المال | كتل الأوامر
 //@version=6
 strategy("HFJ Pro Strategy", shorttitle = "HFJ Strat", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 1000, initial_capital = 10000, currency = currency.USD, process_orders_on_close = true, pyramiding = 0, commission_type = strategy.commission.percent, commission_value = 0.02, slippage = 1)
 
@@ -105,8 +105,8 @@ type OrbSet
 // 1. المدخلات
 // ════════════════════════════════════════════════════════════
 // --- إعدادات الأصل ---
-string p_asset = input.string("Auto", "Asset", options = ["Auto", "Gold (XAUUSD)", "Crypto", "Forex (EURUSD / GBPUSD)", "Custom"], group = G_PRE, tooltip = "يضبط الحساسية والأهداف والوقف المتحرك وجلسة ORB وفلتر الجلسات حسب الأصل. Auto يتعرف على الرمز تلقائياً. Custom = الإعدادات اليدوية بالأسفل (Sensitivity و TP1 multiple و Trailing TP وجلسة ORB)")
-bool   p_sessF = input.bool(true, "Active sessions only", group = G_PRE, tooltip = "ذهب: 03:00-16:00 بتوقيت نيويورك. فوركس: 07:00-17:00 بتوقيت لندن (لندن + نيويورك). كريبتو و Custom: بدون فلتر")
+string p_asset = input.string("Auto", "Asset", options = ["Auto", "Gold (XAUUSD)", "Crypto", "Forex (EURUSD / GBPUSD)", "Indices / Futures", "Custom"], group = G_PRE, tooltip = "يضبط الحساسية والأهداف والوقف المتحرك وجلسة ORB وفلتر الجلسات حسب الأصل. Auto يتعرف على الرمز تلقائياً. Custom = الإعدادات اليدوية بالأسفل (Sensitivity و TP1 multiple و Trailing TP وجلسة ORB)")
+bool   p_sessF = input.bool(true, "Active sessions only", group = G_PRE, tooltip = "ذهب: 03:00-16:00 بتوقيت نيويورك. فوركس: 07:00-17:00 بتوقيت لندن (لندن + نيويورك). مؤشرات/عقود: 09:30-16:00 نيويورك. كريبتو و Custom: بدون فلتر")
 
 // --- الوحدات ---
 bool m_sig  = input.bool(true,  "Trend Signals",   group = G_MOD)
@@ -227,18 +227,18 @@ color  C_BEAR  = input.color(#FF1744, "", inline = "c3", group = G_STY)
 // --- إعدادات الأصل (Preset): ذهب / كريبتو / فوركس، أو Custom = المدخلات اليدوية ---
 string tkU    = str.upper(syminfo.ticker)
 bool   isGold = str.contains(tkU, "XAU") or str.contains(tkU, "GOLD") or syminfo.root == "GC" or syminfo.root == "MGC"
-string assetK = p_asset == "Gold (XAUUSD)" ? "gold" : p_asset == "Crypto" ? "crypto" : p_asset == "Forex (EURUSD / GBPUSD)" ? "forex" : p_asset == "Custom" ? "custom" : isGold ? "gold" : syminfo.type == "crypto" ? "crypto" : syminfo.type == "forex" ? "forex" : "custom"
+string assetK = p_asset == "Gold (XAUUSD)" ? "gold" : p_asset == "Crypto" ? "crypto" : p_asset == "Forex (EURUSD / GBPUSD)" ? "forex" : p_asset == "Indices / Futures" ? "index" : p_asset == "Custom" ? "custom" : isGold ? "gold" : syminfo.type == "crypto" ? "crypto" : syminfo.type == "forex" ? "forex" : syminfo.type == "futures" or syminfo.type == "index" or syminfo.type == "cfd" ? "index" : "custom"
 string o_tz    = "UTC" + (o_utc >= 0 ? "+" : "-") + str.tostring(math.abs(o_utc))
-float  P_sens  = assetK == "gold" ? 1.7 : assetK == "crypto" ? 2.0 : assetK == "forex" ? 1.5 : s_sens
-float  P_tpAtr = assetK == "gold" ? 3.0 : assetK == "crypto" ? 4.0 : assetK == "forex" ? 3.0 : s_tpAtr
-float  P_trail = assetK == "gold" ? 2.5 : assetK == "crypto" ? 2.8 : assetK == "forex" ? 2.0 : s_trailR
-string P_orbS  = assetK == "gold" ? "0930-1000" : assetK == "crypto" ? "0000-0030" : assetK == "forex" ? "0800-0830" : o_sess
-string P_orbTz = assetK == "gold" ? "America/New_York" : assetK == "crypto" ? "UTC" : assetK == "forex" ? "Europe/London" : o_tz
-bool   P_actOn = p_sessF and (assetK == "gold" or assetK == "forex") and timeframe.isintraday
-string P_actS  = assetK == "gold" ? "0300-1600" : "0700-1700"
-string P_actTz = assetK == "gold" ? "America/New_York" : "Europe/London"
+float  P_sens  = assetK == "index" ? 1.7 : assetK == "gold" ? 1.7 : assetK == "crypto" ? 2.0 : assetK == "forex" ? 1.5 : s_sens
+float  P_tpAtr = assetK == "index" ? 3.0 : assetK == "gold" ? 3.0 : assetK == "crypto" ? 4.0 : assetK == "forex" ? 3.0 : s_tpAtr
+float  P_trail = assetK == "index" ? 2.3 : assetK == "gold" ? 2.5 : assetK == "crypto" ? 2.8 : assetK == "forex" ? 2.0 : s_trailR
+string P_orbS  = assetK == "gold" or assetK == "index" ? "0930-1000" : assetK == "crypto" ? "0000-0030" : assetK == "forex" ? "0800-0830" : o_sess
+string P_orbTz = assetK == "gold" or assetK == "index" ? "America/New_York" : assetK == "crypto" ? "UTC" : assetK == "forex" ? "Europe/London" : o_tz
+bool   P_actOn = p_sessF and (assetK == "gold" or assetK == "forex" or assetK == "index") and timeframe.isintraday
+string P_actS  = assetK == "gold" ? "0300-1600" : assetK == "index" ? "0930-1600" : "0700-1700"
+string P_actTz = assetK == "gold" or assetK == "index" ? "America/New_York" : "Europe/London"
 bool   sessOk  = not P_actOn or not na(time(timeframe.period, P_actS, P_actTz))
-string assetTxt = assetK == "gold" ? "Gold" : assetK == "crypto" ? "Crypto" : assetK == "forex" ? "Forex" : "Custom"
+string assetTxt = assetK == "gold" ? "Gold" : assetK == "crypto" ? "Crypto" : assetK == "forex" ? "Forex" : assetK == "index" ? "Indices/Futures" : "Custom"
 
 float atr14   = ta.atr(14)
 float trendMa = ta.ema(close, s_trendLen)
@@ -1034,9 +1034,14 @@ bool  st_be   = input.bool(false, "Break-even at TP1 (1R)", group = G_STR, toolt
 bool  st_flip = input.bool(true, "Exit on trend flip", group = G_STR, tooltip = "إغلاق الصفقة إذا انقلب الاتجاه ضدها قبل الوقف أو الهدف")
 int   st_from = input.time(timestamp("01 Jan 2024 00:00 +0000"), "Start date", group = G_STR)
 
+bool  st_min1 = input.bool(true, "Min 1 contract (futures)", group = G_STR, tooltip = "العقود الآجلة: إذا كانت المخاطرة أقل من عقد واحد يُدخل بعقد واحد. استخدم العقود الصغيرة (MES / MNQ / MGC / MCL) أو ارفع رأس المال من Properties")
+
+// حجم الصفقة: المخاطرة بعملة الحساب ÷ (مسافة الوقف × قيمة النقطة × سعر تحويل عملة الرمز)
+float stRate = nz(request.currency_rate(syminfo.currency, "USD", ignore_invalid_currency = true), 1.0)
 bool  stOk   = time >= st_from
 float stDist = math.abs(tEntry - tSL)
-float stQty  = stDist > 0 ? strategy.equity * st_risk / 100 / (stDist * syminfo.pointvalue) : 0.0
+float stRaw  = stDist > 0 ? strategy.equity * st_risk / 100 / (stDist * syminfo.pointvalue * stRate) : 0.0
+float stQty  = syminfo.type == "futures" ? (st_min1 ? math.max(math.floor(stRaw), 1) : math.floor(stRaw)) : syminfo.type == "forex" ? math.floor(stRaw / 1000) * 1000 : syminfo.type == "stock" or syminfo.type == "fund" ? math.floor(stRaw) : stRaw
 
 if buySig and stOk and stQty > 0
     strategy.entry("Long", strategy.long, qty = stQty)
